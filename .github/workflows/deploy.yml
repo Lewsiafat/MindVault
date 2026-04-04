@@ -23,38 +23,87 @@ jobs:
       - name: Build frontend
         run: cd frontend && npm run build
 
-      - name: Deploy to VPS
+      - name: Setup VPS directory and pull code
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            mkdir -p /srv/projects/mind-vault
+            cd /srv/projects/mind-vault
+            git fetch origin 2>/dev/null || true
+            git checkout -B main origin/main 2>/dev/null || git checkout main 2>/dev/null || true
+
+      - name: Rsync built frontend to VPS
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz --delete
+          path: src/static/
+          remote_path: /srv/projects/mind-vault/src/static/
+          remote_host: ${{ secrets.VPS_HOST }}
+          remote_user: ${{ secrets.VPS_USER }}
+          remote_key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Rsync source to VPS
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz
+          path: src/main.py
+          remote_path: /srv/projects/mind-vault/src/main.py
+          remote_host: ${{ secrets.VPS_HOST }}
+          remote_user: ${{ secrets.VPS_USER }}
+          remote_key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Rsync data and config to VPS
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz
+          path: pyproject.toml
+          remote_path: /srv/projects/mind-vault/pyproject.toml
+          remote_host: ${{ secrets.VPS_HOST }}
+          remote_user: ${{ secrets.VPS_USER }}
+          remote_key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Rsync notes data to VPS
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avz
+          path: data/
+          remote_path: /srv/projects/mind-vault/data/
+          remote_host: ${{ secrets.VPS_HOST }}
+          remote_user: ${{ secrets.VPS_USER }}
+          remote_key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Configure and restart service
+        uses: appleboy/ssh-action@v1
+        env:
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GEMINI_KEY
+          script: |
             set -e
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            export PATH="$HOME/.local/bin:$PATH"
             PROJECT=mind-vault
             PORT=10016
 
             cd /srv/projects/$PROJECT
-            git pull origin main
 
-            # Install Python deps with uv
+            # Write env file
+            printf 'GEMINI_API_KEY=%s\n' "$GEMINI_KEY" > .env
+
+            # Install uv if needed
             if ! command -v uv &>/dev/null; then
               curl -LsSf https://astral.sh/uv/install.sh | sh
-              export PATH="$HOME/.local/bin:$PATH"
             fi
-            export PATH="$HOME/.local/bin:$PATH"
             uv sync
-
-            # Write .env with API keys
-            cat > /srv/projects/$PROJECT/.env << ENVEOF
-GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-ENVEOF
 
             # Create systemd service if not exists
             if [ ! -f /etc/systemd/system/$PROJECT.service ]; then
-              sudo tee /etc/systemd/system/$PROJECT.service > /dev/null << EOF
+              sudo tee /etc/systemd/system/$PROJECT.service > /dev/null << 'SVCEOF'
             [Unit]
             Description=MindVault AI notes service
             After=network.target
@@ -62,24 +111,24 @@ ENVEOF
             [Service]
             Type=simple
             User=lewsi
-            WorkingDirectory=/srv/projects/$PROJECT
-            ExecStart=/srv/projects/$PROJECT/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port $PORT
+            WorkingDirectory=/srv/projects/mind-vault
+            ExecStart=/srv/projects/mind-vault/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 10016
             Environment="PATH=/home/lewsi/.local/bin:/home/lewsi/.nvm/versions/node/v22.17.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             Environment="BASE_PATH=mind-vault"
-            EnvironmentFile=/srv/projects/$PROJECT/.env
+            EnvironmentFile=/srv/projects/mind-vault/.env
             Restart=on-failure
             RestartSec=5
 
             [Install]
             WantedBy=multi-user.target
-            EOF
+            SVCEOF
               sudo systemctl daemon-reload
               sudo systemctl enable $PROJECT
             fi
 
             # Create nginx config if not exists
             if [ ! -f /etc/nginx/conf.d/projects/$PROJECT.conf ]; then
-              sudo tee /etc/nginx/conf.d/projects/$PROJECT.conf > /dev/null << 'EOF'
+              sudo tee /etc/nginx/conf.d/projects/$PROJECT.conf > /dev/null << 'NGEOF'
             location /mind-vault/ {
                 proxy_pass http://127.0.0.1:10016/mind-vault/;
                 proxy_set_header Host $host;
@@ -90,8 +139,10 @@ ENVEOF
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";
             }
-            EOF
+            NGEOF
               sudo nginx -t && sudo systemctl reload nginx
             fi
 
             sudo systemctl restart $PROJECT
+            sleep 3
+            sudo systemctl is-active $PROJECT
