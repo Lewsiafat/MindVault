@@ -3,9 +3,8 @@ import re
 import json
 import time
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 
@@ -16,6 +15,13 @@ app = FastAPI(title="MindVault", root_path=root_path)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 NOTES_FILE = DATA_DIR / "notes.md"
+
+# Sub-folders to scan
+SUBFOLDERS = {
+    "articles": "📰 文章",
+    "saves": "💾 儲存",
+    "conversations": "💬 對話記錄",
+}
 
 _gemini_key = os.environ.get("GEMINI_API_KEY", "")
 if _gemini_key:
@@ -28,6 +34,41 @@ def load_notes() -> str:
     if not NOTES_FILE.exists():
         return ""
     return NOTES_FILE.read_text(encoding="utf-8")
+
+
+def load_all_docs() -> list[dict]:
+    """Load all documents from data/ and sub-folders."""
+    docs = []
+
+    # notes.md (root)
+    if NOTES_FILE.exists():
+        docs.append({
+            "name": "notes.md",
+            "label": "📋 個人筆記",
+            "folder": "root",
+            "content": NOTES_FILE.read_text(encoding="utf-8"),
+            "path": str(NOTES_FILE),
+        })
+
+    # sub-folders
+    for folder, label in SUBFOLDERS.items():
+        folder_path = DATA_DIR / folder
+        if not folder_path.exists():
+            continue
+        for f in sorted(folder_path.glob("*.md")):
+            try:
+                content = f.read_text(encoding="utf-8")
+                docs.append({
+                    "name": f.name,
+                    "label": label,
+                    "folder": folder,
+                    "content": content,
+                    "path": str(f),
+                })
+            except Exception:
+                pass
+
+    return docs
 
 
 def parse_sections(text: str) -> list[dict]:
@@ -43,7 +84,6 @@ def parse_sections(text: str) -> list[dict]:
             current["content"] += line + "\n"
         elif current:
             current["content"] += line + "\n"
-            # collect bullet items
             m = re.match(r"^[-*]\s+(.+)", line)
             if m:
                 current["items"].append(m.group(1).strip())
@@ -53,7 +93,6 @@ def parse_sections(text: str) -> list[dict]:
 
 
 def extract_all_items(text: str) -> list[dict]:
-    """Extract all bullet items with their parent heading context."""
     items = []
     current_h2 = ""
     current_h3 = ""
@@ -74,10 +113,33 @@ def extract_all_items(text: str) -> list[dict]:
     return items
 
 
+def doc_preview(content: str, max_chars: int = 300) -> str:
+    """Strip markdown syntax and return a plain text preview."""
+    text = re.sub(r"^#+\s+", "", content, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"_(.+?)_", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
+    text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{2,}", "\n", text).strip()
+    return text[:max_chars] + ("…" if len(text) > max_chars else "")
+
+
+def gemini(prompt: str) -> str:
+    if not _model:
+        raise ValueError("GEMINI_API_KEY not configured")
+    resp = _model.generate_content(prompt)
+    text_out = resp.text.strip()
+    if text_out.startswith("```"):
+        text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
+        text_out = re.sub(r"\n?```$", "", text_out)
+    return text_out
+
+
 # ─── cache ─────────────────────────────────────────────────
 
 _ai_cache: dict = {}
-_cache_ttl = 3600  # 1 hour
+_cache_ttl = 3600
 
 
 def get_cached(key: str):
@@ -101,34 +163,72 @@ def get_notes():
     return {"sections": sections, "items": items, "raw": text}
 
 
+@app.get("/api/library")
+def get_library():
+    """Return all documents with metadata and preview."""
+    docs = load_all_docs()
+    result = []
+    for d in docs:
+        first_heading = ""
+        m = re.search(r"^#+ (.+)", d["content"], re.MULTILINE)
+        if m:
+            first_heading = m.group(1)
+        result.append({
+            "name": d["name"],
+            "label": d["label"],
+            "folder": d["folder"],
+            "title": first_heading or d["name"].replace(".md", ""),
+            "preview": doc_preview(d["content"]),
+            "size": len(d["content"]),
+        })
+    return {"docs": result, "total": len(result)}
+
+
+@app.get("/api/doc")
+def get_doc(folder: str, name: str):
+    """Return full content of a specific document."""
+    if folder == "root":
+        path = DATA_DIR / name
+    else:
+        path = DATA_DIR / folder / name
+    if not path.exists() or not path.is_relative_to(DATA_DIR):
+        from fastapi import HTTPException
+        raise HTTPException(404, "Document not found")
+    return {
+        "name": name,
+        "folder": folder,
+        "content": path.read_text(encoding="utf-8"),
+    }
+
+
 @app.get("/api/summary")
 def get_summary():
     cached = get_cached("summary")
     if cached:
         return cached
 
-    text = load_notes()
-    if not text.strip():
-        return {"summary": "No notes found."}
+    docs = load_all_docs()
+    if not docs:
+        return {"summary": "No documents found.", "topics": []}
+
+    # Summarize notes.md + titles of other docs
+    notes_text = next((d["content"] for d in docs if d["folder"] == "root"), "")
+    other_titles = [d["title"] for d in docs if d["folder"] != "root"]
 
     try:
-        if not _model:
-            raise ValueError("GEMINI_API_KEY not configured")
-        prompt = f"""以下是一份個人筆記文件。請用繁體中文輸出：
-1. 一段 3-4 句的整體摘要
-2. 主要主題列表（bullet points）
+        prompt = f"""以下是個人知識庫的內容概覽。請用繁體中文輸出：
+1. 一段 3-4 句的整體摘要（說明這個知識庫記錄了什麼）
+2. 主要主題列表
 
-筆記內容：
-{text}
+個人筆記（notes.md）：
+{notes_text[:2000]}
+
+其他儲存的文件（{len(other_titles)} 份）：
+{chr(10).join(f'- {t}' for t in other_titles[:20])}
 
 只回覆以下 JSON 格式，不要加任何其他文字：
 {{"summary": "...", "topics": ["主題1", "主題2", ...]}}"""
-        resp = _model.generate_content(prompt)
-        text_out = resp.text.strip()
-        if text_out.startswith("```"):
-            text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
-            text_out = re.sub(r"\n?```$", "", text_out)
-        result = json.loads(text_out)
+        result = json.loads(gemini(prompt))
     except Exception as e:
         result = {"summary": f"AI 摘要暫時無法使用：{e}", "topics": []}
 
@@ -150,8 +250,6 @@ def get_categories():
     items_text = "\n".join([f"- [{i['category']}] {i['text']}" for i in items[:60]])
 
     try:
-        if not _model:
-            raise ValueError("GEMINI_API_KEY not configured")
         prompt = f"""以下是一系列筆記項目，格式為 [分類] 內容。
 請用繁體中文重新整理，輸出 JSON 格式：將相似主題的項目歸類，給每個類別一個清晰的名稱和表情符號。
 
@@ -160,14 +258,8 @@ def get_categories():
 
 只回覆以下 JSON 格式，不要加任何其他文字：
 {{"categories": [{{"name": "類別名稱", "emoji": "🔧", "items": ["項目1", "項目2"]}}]}}"""
-        resp = _model.generate_content(prompt)
-        text_out = resp.text.strip()
-        if text_out.startswith("```"):
-            text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
-            text_out = re.sub(r"\n?```$", "", text_out)
-        result = json.loads(text_out)
+        result = json.loads(gemini(prompt))
     except Exception as e:
-        # fallback: use raw sections
         sections = parse_sections(text)
         result = {"categories": [
             {"name": s["title"], "emoji": "📌", "items": s["items"]}
@@ -178,22 +270,77 @@ def get_categories():
     return result
 
 
+@app.get("/api/doc-summary")
+def get_doc_summary(folder: str, name: str):
+    """AI summary of a specific document."""
+    cache_key = f"doc_summary_{folder}_{name}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    if folder == "root":
+        path = DATA_DIR / name
+    else:
+        path = DATA_DIR / folder / name
+
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404)
+
+    content = path.read_text(encoding="utf-8")
+    try:
+        prompt = f"""請用繁體中文為以下文件生成簡潔摘要（3-5 句話）：
+
+{content[:3000]}
+
+只回覆 JSON 格式：{{"summary": "..."}}"""
+        result = json.loads(gemini(prompt))
+    except Exception as e:
+        result = {"summary": f"無法生成摘要：{e}"}
+
+    set_cached(cache_key, result)
+    return result
+
+
 @app.get("/api/search")
 def search(q: str = ""):
     if not q:
         return {"results": []}
+
+    q_lower = q.lower()
+    results = []
+
+    # search notes.md items
     text = load_notes()
     items = extract_all_items(text)
-    q_lower = q.lower()
-    results = [i for i in items if q_lower in i["text"].lower()
-               or q_lower in i["category"].lower()
-               or q_lower in i["subcategory"].lower()]
+    for i in items:
+        if q_lower in i["text"].lower() or q_lower in i["category"].lower():
+            results.append({**i, "source": "notes.md", "type": "note"})
+
+    # search all docs content
+    docs = load_all_docs()
+    for d in docs:
+        if d["folder"] == "root":
+            continue
+        if q_lower in d["content"].lower() or q_lower in d["name"].lower():
+            # find matching lines
+            lines = [l.strip() for l in d["content"].splitlines()
+                     if q_lower in l.lower() and l.strip()][:3]
+            results.append({
+                "text": " | ".join(lines) if lines else d["name"],
+                "category": d["label"],
+                "subcategory": d["name"],
+                "source": d["name"],
+                "type": "document",
+            })
+
     return {"results": results[:30]}
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "notes_exists": NOTES_FILE.exists()}
+    docs = load_all_docs()
+    return {"status": "ok", "notes_exists": NOTES_FILE.exists(), "total_docs": len(docs)}
 
 
 # ─── static frontend ───────────────────────────────────────
