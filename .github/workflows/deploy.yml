@@ -14,14 +14,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend deps
-        run: cd frontend && npm ci
-
-      - name: Build frontend
-        run: cd frontend && npm run build
+      - name: Install frontend deps and build
+        run: cd frontend && npm install && npm run build
 
       - name: Setup VPS directory and pull code
         uses: appleboy/ssh-action@v1
