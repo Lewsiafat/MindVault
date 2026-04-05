@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai as genai_sdk
 
 BASE_PATH = os.environ.get("BASE_PATH", "mind-vault").strip("/")
 root_path = f"/{BASE_PATH}" if BASE_PATH else ""
@@ -24,9 +24,7 @@ SUBFOLDERS = {
 }
 
 _gemini_key = os.environ.get("GEMINI_API_KEY", "")
-if _gemini_key:
-    genai.configure(api_key=_gemini_key)
-_model = genai.GenerativeModel("gemini-2.0-flash-lite") if _gemini_key else None
+_client = genai_sdk.Client(api_key=_gemini_key) if _gemini_key else None
 
 # ─── helpers ───────────────────────────────────────────────
 
@@ -126,9 +124,9 @@ def doc_preview(content: str, max_chars: int = 300) -> str:
 
 
 def gemini(prompt: str) -> str:
-    if not _model:
+    if not _client:
         raise ValueError("GEMINI_API_KEY not configured")
-    resp = _model.generate_content(prompt)
+    resp = _client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
     text_out = resp.text.strip()
     if text_out.startswith("```"):
         text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
@@ -234,7 +232,12 @@ def get_summary():
 
     # Summarize notes.md + titles of other docs
     notes_text = next((d["content"] for d in docs if d["folder"] == "root"), "")
-    other_titles = [d["title"] for d in docs if d["folder"] != "root"]
+    other_titles = []
+    for d in docs:
+        if d["folder"] == "root":
+            continue
+        m = re.search(r"^#+ (.+)", d["content"], re.MULTILINE)
+        other_titles.append(m.group(1) if m else d["name"].replace(".md", ""))
 
     try:
         prompt = f"""以下是個人知識庫的內容概覽。請用繁體中文輸出：
