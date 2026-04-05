@@ -173,6 +173,7 @@ def get_library():
         m = re.search(r"^#+ (.+)", d["content"], re.MULTILINE)
         if m:
             first_heading = m.group(1)
+        mtime = Path(d["path"]).stat().st_mtime if Path(d["path"]).exists() else 0
         result.append({
             "name": d["name"],
             "label": d["label"],
@@ -180,8 +181,28 @@ def get_library():
             "title": first_heading or d["name"].replace(".md", ""),
             "preview": doc_preview(d["content"]),
             "size": len(d["content"]),
+            "mtime": mtime,
         })
     return {"docs": result, "total": len(result)}
+
+
+@app.get("/api/stats")
+def get_stats():
+    """Return knowledge base statistics."""
+    docs = load_all_docs()
+    total_words = sum(len(d["content"].split()) for d in docs)
+    notes_text = next((d["content"] for d in docs if d["folder"] == "root"), "")
+    notes_items = len(extract_all_items(notes_text))
+    folder_counts: dict = {}
+    for d in docs:
+        label = d["label"]
+        folder_counts[label] = folder_counts.get(label, 0) + 1
+    return {
+        "total_docs": len(docs),
+        "total_words": total_words,
+        "notes_items": notes_items,
+        "folder_counts": folder_counts,
+    }
 
 
 @app.get("/api/doc")

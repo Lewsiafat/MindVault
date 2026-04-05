@@ -27,6 +27,9 @@ const summaryLoaded = ref(false)
 const catLoaded = ref(false)
 const libLoaded = ref(false)
 
+const stats = ref<{ total_docs: number, total_words: number, notes_items: number, folder_counts: Record<string, number> } | null>(null)
+const statsLoading = ref(false)
+
 // Configure marked
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -74,6 +77,17 @@ async function fetchLibrary() {
   }
 }
 
+async function fetchStats() {
+  if (stats.value) return
+  statsLoading.value = true
+  try {
+    const r = await fetch(`${BASE}/api/stats`)
+    stats.value = await r.json()
+  } finally {
+    statsLoading.value = false
+  }
+}
+
 async function openDoc(folder: string, name: string) {
   docLoading.value = true
   try {
@@ -114,10 +128,31 @@ async function doSearch() {
   }
 }
 
+const recentDocs = computed(() => {
+  return [...library.value.docs]
+    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0))
+    .slice(0, 8)
+})
+
+function formatDate(ts: number): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const now = new Date()
+  const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000)
+  if (diffDays === 0) return '今天'
+  if (diffDays === 1) return '昨天'
+  if (diffDays < 7) return `${diffDays} 天前`
+  return d.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })
+}
+
 function setView(v: View) {
   view.value = v
   activeDoc.value = null
-  if (v === 'overview' && !summaryLoaded.value) fetchSummary()
+  if (v === 'overview') {
+    if (!summaryLoaded.value) fetchSummary()
+    fetchStats()
+    if (!libLoaded.value) fetchLibrary()
+  }
   if (v === 'categories' && !catLoaded.value) fetchCategories()
   if (v === 'library' && !libLoaded.value) fetchLibrary()
 }
@@ -132,6 +167,8 @@ const folderLabel: Record<string, string> = {
 onMounted(() => {
   fetchNotes()
   fetchSummary()
+  fetchStats()
+  fetchLibrary()
 })
 </script>
 
@@ -194,14 +231,45 @@ onMounted(() => {
             </div>
           </div>
         </div>
-        <div class="sections-grid">
-          <div class="section-card" v-for="sec in notes.sections" :key="sec.title">
-            <div class="section-title">{{ sec.title }}</div>
-            <div class="section-count">{{ sec.items.length }} 項</div>
-            <ul class="section-items">
-              <li v-for="item in sec.items.slice(0, 4)" :key="item">{{ item }}</li>
-              <li v-if="sec.items.length > 4" class="more">+{{ sec.items.length - 4 }} 更多</li>
-            </ul>
+        <!-- Stats dashboard -->
+        <div class="stats-dashboard" v-if="stats">
+          <div class="stat-card">
+            <div class="stat-card-num">{{ stats.total_docs }}</div>
+            <div class="stat-card-label">📄 文件總數</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-num">{{ stats.total_words.toLocaleString() }}</div>
+            <div class="stat-card-label">📝 總字數</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-num">{{ stats.notes_items }}</div>
+            <div class="stat-card-label">📌 筆記條目</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-num">{{ Object.keys(stats.folder_counts).length }}</div>
+            <div class="stat-card-label">🗂️ 分類數量</div>
+          </div>
+        </div>
+        <div class="stats-folder-row" v-if="stats">
+          <span class="folder-stat" v-for="(count, label) in stats.folder_counts" :key="label">
+            {{ label }} <strong>{{ count }}</strong>
+          </span>
+        </div>
+
+        <!-- Recent docs -->
+        <h2 class="section-subtitle">最近更新</h2>
+        <div v-if="libLoading && !library.docs.length" class="loading-dots" style="justify-content:flex-start;gap:0.4rem;margin-bottom:1rem;">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="recent-docs" v-else>
+          <div class="recent-doc-card" v-for="doc in recentDocs" :key="doc.folder + doc.name"
+            @click="openDoc(doc.folder, doc.name)">
+            <div class="recent-doc-top">
+              <span class="recent-doc-label">{{ doc.label }}</span>
+              <span class="recent-doc-time">{{ formatDate(doc.mtime) }}</span>
+            </div>
+            <div class="recent-doc-title">{{ doc.title || doc.name }}</div>
+            <p class="recent-doc-preview">{{ doc.preview }}</p>
           </div>
         </div>
       </section>
@@ -353,16 +421,26 @@ onMounted(() => {
 .topics { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .topic-tag { background: var(--surface2); border: 1px solid var(--border); color: var(--accent2); padding: 0.2rem 0.6rem; border-radius: 20px; font-size: 0.8rem; }
 
-/* sections grid */
-.sections-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
-.section-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; transition: border-color 0.2s; }
-.section-card:hover { border-color: var(--accent); }
-.section-title { font-weight: 600; margin-bottom: 0.3rem; }
-.section-count { font-size: 0.8rem; color: var(--accent2); margin-bottom: 0.6rem; }
-.section-items { list-style: none; padding: 0; }
-.section-items li { font-size: 0.82rem; color: var(--muted); padding: 0.15rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.section-items li::before { content: '• '; color: var(--accent); }
-.more { color: var(--accent) !important; font-style: italic; }
+/* stats dashboard */
+.stats-dashboard { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 0.75rem; }
+@media (max-width: 700px) { .stats-dashboard { grid-template-columns: repeat(2, 1fr); } }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; text-align: center; }
+.stat-card-num { font-size: 1.8rem; font-weight: 700; color: var(--accent2); line-height: 1; margin-bottom: 0.35rem; }
+.stat-card-label { font-size: 0.78rem; color: var(--muted); }
+.stats-folder-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.75rem; }
+.folder-stat { background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; padding: 0.2rem 0.75rem; font-size: 0.78rem; color: var(--muted); }
+.folder-stat strong { color: var(--accent); margin-left: 0.25rem; }
+.section-subtitle { font-size: 1rem; font-weight: 600; color: var(--muted); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* recent docs */
+.recent-docs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.75rem; }
+.recent-doc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
+.recent-doc-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.recent-doc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+.recent-doc-label { font-size: 0.72rem; color: var(--accent2); background: var(--surface2); padding: 0.1rem 0.5rem; border-radius: 10px; }
+.recent-doc-time { font-size: 0.72rem; color: var(--muted); }
+.recent-doc-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.35rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-doc-preview { font-size: 0.78rem; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; }
 
 /* library */
 .folder-group { margin-bottom: 2rem; }
