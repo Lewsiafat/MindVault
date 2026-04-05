@@ -126,7 +126,7 @@ def doc_preview(content: str, max_chars: int = 300) -> str:
 def gemini(prompt: str) -> str:
     if not _client:
         raise ValueError("GEMINI_API_KEY not configured")
-    resp = _client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
+    resp = _client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     text_out = resp.text.strip()
     if text_out.startswith("```"):
         text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
