@@ -242,29 +242,79 @@ def get_categories():
     if cached:
         return cached
 
+    # notes.md bullet items
     text = load_notes()
-    items = extract_all_items(text)
-    if not items:
+    note_items = extract_all_items(text)
+    note_items_text = "\n".join([f"- [筆記/{i['category']}] {i['text']}" for i in note_items[:50]])
+
+    # document titles from all sub-folders
+    docs = load_all_docs()
+    doc_items = []
+    for d in docs:
+        if d["folder"] == "root":
+            continue
+        m = re.search(r"^#+ (.+)", d["content"], re.MULTILINE)
+        title = m.group(1) if m else d["name"].replace(".md", "")
+        doc_items.append({
+            "label": d["label"],
+            "folder": d["folder"],
+            "name": d["name"],
+            "title": title,
+        })
+    doc_items_text = "\n".join([f"- [{d['label']}] {d['title']}" for d in doc_items])
+
+    all_items_text = note_items_text
+    if doc_items_text:
+        all_items_text += "\n" + doc_items_text
+
+    if not all_items_text.strip():
         return {"categories": []}
 
-    items_text = "\n".join([f"- [{i['category']}] {i['text']}" for i in items[:60]])
-
     try:
-        prompt = f"""以下是一系列筆記項目，格式為 [分類] 內容。
-請用繁體中文重新整理，輸出 JSON 格式：將相似主題的項目歸類，給每個類別一個清晰的名稱和表情符號。
+        prompt = f"""以下是個人知識庫的所有項目（包含筆記條目和已儲存的文件）。
+請用繁體中文將它們重新歸類，每個類別給一個清晰名稱和表情符號。
 
-筆記項目：
-{items_text}
+項目清單：
+{all_items_text}
 
 只回覆以下 JSON 格式，不要加任何其他文字：
-{{"categories": [{{"name": "類別名稱", "emoji": "🔧", "items": ["項目1", "項目2"]}}]}}"""
+{{"categories": [{{"name": "類別名稱", "emoji": "🔧", "items": [{{"text": "項目文字", "type": "note或doc", "folder": "資料夾或空", "name": "檔名或空"}}]}}]}}"""
         result = json.loads(gemini(prompt))
     except Exception as e:
+        # fallback: notes sections + docs as separate categories
         sections = parse_sections(text)
-        result = {"categories": [
-            {"name": s["title"], "emoji": "📌", "items": s["items"]}
-            for s in sections if s["items"]
-        ]}
+        cats = [{"name": s["title"], "emoji": "📌",
+                 "items": [{"text": i, "type": "note", "folder": "", "name": ""} for i in s["items"]]}
+                for s in sections if s["items"]]
+        if doc_items:
+            folder_groups: dict = {}
+            for d in doc_items:
+                folder_groups.setdefault(d["label"], []).append(
+                    {"text": d["title"], "type": "doc", "folder": d["folder"], "name": d["name"]}
+                )
+            for label, items in folder_groups.items():
+                cats.append({"name": label, "emoji": "📄", "items": items})
+        result = {"categories": cats}
+
+    # ensure items are always dicts
+    for cat in result.get("categories", []):
+        normalized = []
+        for item in cat.get("items", []):
+            if isinstance(item, str):
+                normalized.append({"text": item, "type": "note", "folder": "", "name": ""})
+            else:
+                normalized.append(item)
+        cat["items"] = normalized
+
+    # inject doc metadata for items AI may have matched
+    doc_map = {d["title"]: d for d in doc_items}
+    for cat in result.get("categories", []):
+        for item in cat.get("items", []):
+            if item.get("type") == "doc" and not item.get("folder"):
+                match = doc_map.get(item["text"])
+                if match:
+                    item["folder"] = match["folder"]
+                    item["name"] = match["name"]
 
     set_cached("categorize", result)
     return result

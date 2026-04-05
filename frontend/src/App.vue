@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { marked } from 'marked'
 
 const BASE = import.meta.env.PROD ? '/mind-vault' : ''
 
@@ -25,7 +26,13 @@ const searchLoading = ref(false)
 const summaryLoaded = ref(false)
 const catLoaded = ref(false)
 const libLoaded = ref(false)
-const totalItems = computed(() => notes.value.items.length)
+
+// Configure marked
+marked.setOptions({ breaks: true, gfm: true })
+
+function renderMd(md: string): string {
+  return marked.parse(md) as string
+}
 
 async function fetchNotes() {
   const r = await fetch(`${BASE}/api/notes`)
@@ -67,12 +74,17 @@ async function fetchLibrary() {
   }
 }
 
-async function openDoc(doc: any) {
+async function openDoc(folder: string, name: string) {
   docLoading.value = true
   try {
-    const r = await fetch(`${BASE}/api/doc?folder=${doc.folder}&name=${doc.name}`)
+    const r = await fetch(`${BASE}/api/doc?folder=${folder}&name=${name}`)
     const data = await r.json()
     activeDoc.value = { ...data, summaryText: undefined }
+    // switch to library view so back button works
+    if (view.value !== 'library') {
+      view.value = 'library'
+      libLoaded.value = true // don't re-fetch
+    }
   } finally {
     docLoading.value = false
   }
@@ -110,25 +122,11 @@ function setView(v: View) {
   if (v === 'library' && !libLoaded.value) fetchLibrary()
 }
 
-// folder label → emoji map
 const folderEmoji: Record<string, string> = {
-  root: '📋',
-  articles: '📰',
-  saves: '💾',
-  conversations: '💬',
+  root: '📋', articles: '📰', saves: '💾', conversations: '💬',
 }
-
-function renderMarkdown(md: string): string {
-  return md
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/_(.+?)_/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code>$1</code>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/^(?!<[hli])(.+)$/gm, '<p>$1</p>')
+const folderLabel: Record<string, string> = {
+  root: '個人筆記', articles: '文章', saves: '儲存', conversations: '對話記錄',
 }
 
 onMounted(() => {
@@ -145,7 +143,6 @@ onMounted(() => {
         <span class="logo-icon">🧠</span>
         <span class="logo-text">MindVault</span>
       </div>
-
       <nav class="nav">
         <button :class="['nav-item', view === 'overview' && 'active']" @click="setView('overview')">
           <span>✨</span> 概覽
@@ -163,7 +160,6 @@ onMounted(() => {
           <span>📄</span> 原始筆記
         </button>
       </nav>
-
       <div class="sidebar-stats" v-if="notes.items.length">
         <div class="stat">
           <span class="stat-num">{{ notes.sections.length }}</span>
@@ -182,10 +178,9 @@ onMounted(() => {
       <!-- ── OVERVIEW ── -->
       <section v-if="view === 'overview'" class="section">
         <h1 class="page-title">概覽</h1>
-
-        <div class="card summary-card">
+        <div class="card">
           <div class="card-header">
-            <span class="card-icon">✨</span>
+            <span>✨</span>
             <span class="card-title">AI 知識庫摘要</span>
             <button class="refresh-btn" @click="() => { summaryLoaded = false; fetchSummary() }" :disabled="summaryLoading">
               {{ summaryLoading ? '生成中...' : '重新生成' }}
@@ -194,12 +189,11 @@ onMounted(() => {
           <div v-if="summaryLoading" class="loading-dots"><span></span><span></span><span></span></div>
           <div v-else-if="summary">
             <p class="summary-text">{{ summary.summary }}</p>
-            <div class="topics" v-if="summary.topics?.length">
+            <div class="topics">
               <span class="topic-tag" v-for="t in summary.topics" :key="t">{{ t }}</span>
             </div>
           </div>
         </div>
-
         <div class="sections-grid">
           <div class="section-card" v-for="sec in notes.sections" :key="sec.title">
             <div class="section-title">{{ sec.title }}</div>
@@ -217,7 +211,7 @@ onMounted(() => {
         <!-- Doc reader -->
         <div v-if="activeDoc" class="doc-reader">
           <div class="doc-reader-header">
-            <button class="back-btn" @click="activeDoc = null">← 返回文件庫</button>
+            <button class="back-btn" @click="activeDoc = null">← 返回</button>
             <span class="doc-reader-title">{{ activeDoc.name }}</span>
             <button class="refresh-btn" @click="summarizeDoc" :disabled="docSummaryLoading">
               {{ docSummaryLoading ? 'AI 摘要中...' : '✨ AI 摘要' }}
@@ -226,29 +220,23 @@ onMounted(() => {
           <div v-if="activeDoc.summaryText" class="doc-summary-box">
             <strong>AI 摘要：</strong> {{ activeDoc.summaryText }}
           </div>
-          <pre class="raw-content doc-raw">{{ activeDoc.content }}</pre>
+          <!-- Rendered markdown -->
+          <div class="md-body" v-html="renderMd(activeDoc.content)"></div>
         </div>
 
         <template v-else>
           <h1 class="page-title">文件庫 <span class="title-count">{{ library.total }}</span></h1>
-
           <div v-if="libLoading" class="loading-state">
             <div class="loading-dots"><span></span><span></span><span></span></div>
             <p>載入文件中...</p>
           </div>
-
           <div v-else>
-            <!-- Group by folder -->
             <div v-for="folder in ['root','articles','saves','conversations']" :key="folder">
               <div v-if="library.docs.filter(d => d.folder === folder).length" class="folder-group">
-                <h2 class="folder-title">{{ folderEmoji[folder] }} {{ SUBFOLDERS_LABEL[folder] }}</h2>
+                <h2 class="folder-title">{{ folderEmoji[folder] }} {{ folderLabel[folder] }}</h2>
                 <div class="doc-grid">
-                  <div
-                    class="doc-card"
-                    v-for="doc in library.docs.filter(d => d.folder === folder)"
-                    :key="doc.name"
-                    @click="openDoc(doc)"
-                  >
+                  <div class="doc-card" v-for="doc in library.docs.filter(d => d.folder === folder)" :key="doc.name"
+                    @click="openDoc(doc.folder, doc.name)">
                     <div class="doc-name">{{ doc.title || doc.name }}</div>
                     <div class="doc-filename">{{ doc.name }}</div>
                     <p class="doc-preview">{{ doc.preview }}</p>
@@ -266,18 +254,26 @@ onMounted(() => {
         <h1 class="page-title">AI 智能分類</h1>
         <div v-if="catLoading" class="loading-state">
           <div class="loading-dots"><span></span><span></span><span></span></div>
-          <p>AI 正在分析筆記...</p>
+          <p>AI 正在分析所有筆記和文件...</p>
         </div>
-        <div v-else class="categories-grid">
-          <div class="cat-card" v-for="cat in categories.categories" :key="cat.name">
-            <div class="cat-header">
-              <span class="cat-emoji">{{ cat.emoji }}</span>
-              <span class="cat-name">{{ cat.name }}</span>
-              <span class="cat-count">{{ cat.items?.length || 0 }}</span>
+        <div v-else>
+          <div class="categories-grid">
+            <div class="cat-card" v-for="cat in categories.categories" :key="cat.name">
+              <div class="cat-header">
+                <span class="cat-emoji">{{ cat.emoji }}</span>
+                <span class="cat-name">{{ cat.name }}</span>
+                <span class="cat-count">{{ cat.items?.length || 0 }}</span>
+              </div>
+              <ul class="cat-items">
+                <li v-for="item in cat.items" :key="item.text || item"
+                  :class="['cat-item', (item.type === 'doc' && item.folder) ? 'cat-item-doc' : '']"
+                  @click="item.type === 'doc' && item.folder ? openDoc(item.folder, item.name) : null">
+                  <span class="cat-item-icon" v-if="item.type === 'doc'">📄</span>
+                  {{ item.text || item }}
+                  <span class="cat-item-arrow" v-if="item.type === 'doc' && item.folder">→</span>
+                </li>
+              </ul>
             </div>
-            <ul class="cat-items">
-              <li v-for="item in cat.items" :key="item">{{ item }}</li>
-            </ul>
           </div>
         </div>
       </section>
@@ -292,10 +288,14 @@ onMounted(() => {
           </button>
         </div>
         <div v-if="searchResults.length" class="search-results">
-          <div class="result-item" v-for="(r, i) in searchResults" :key="i">
+          <div class="result-item"
+            :class="r.type === 'document' ? 'result-item-doc' : ''"
+            v-for="(r, i) in searchResults" :key="i"
+            @click="r.type === 'document' ? openDoc(r.folder || 'root', r.source) : null"
+            :style="r.type === 'document' ? 'cursor:pointer' : ''">
             <div class="result-header">
               <span class="result-badge">{{ r.category }}</span>
-              <span v-if="r.type === 'document'" class="result-type-badge">文件</span>
+              <span v-if="r.type === 'document'" class="result-type-badge">📄 文件</span>
               <span class="result-source">{{ r.source }}</span>
             </div>
             <p class="result-text">{{ r.text }}</p>
@@ -309,77 +309,53 @@ onMounted(() => {
       <!-- ── RAW ── -->
       <section v-if="view === 'raw'" class="section">
         <h1 class="page-title">原始筆記</h1>
-        <pre class="raw-content">{{ notes.raw }}</pre>
+        <!-- Rendered markdown view with toggle -->
+        <div class="raw-toggle">
+          <span style="font-size:0.85rem;color:var(--muted)">notes.md</span>
+        </div>
+        <div class="md-body notes-md-body" v-html="renderMd(notes.raw)"></div>
       </section>
 
     </main>
   </div>
 </template>
 
-<script lang="ts">
-// Folder display labels (accessible in template)
-export const SUBFOLDERS_LABEL: Record<string, string> = {
-  root: '個人筆記',
-  articles: '文章',
-  saves: '儲存',
-  conversations: '對話記錄',
-}
-</script>
-
 <style scoped>
 .layout { display: flex; min-height: 100vh; }
 
 /* sidebar */
-.sidebar {
-  width: 220px; min-height: 100vh;
-  background: var(--surface); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column;
-  padding: 1.5rem 1rem; position: sticky; top: 0; flex-shrink: 0;
-}
+.sidebar { width: 220px; min-height: 100vh; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 1.5rem 1rem; position: sticky; top: 0; flex-shrink: 0; }
 .logo { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 2rem; }
 .logo-icon { font-size: 1.5rem; }
 .logo-text { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: -0.02em; }
-
 .nav { display: flex; flex-direction: column; gap: 0.3rem; }
-.nav-item {
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.55rem 0.8rem; border-radius: 8px;
-  background: transparent; color: var(--muted); font-size: 0.9rem;
-  text-align: left; width: 100%;
-}
+.nav-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.8rem; border-radius: 8px; background: transparent; color: var(--muted); font-size: 0.9rem; text-align: left; width: 100%; }
 .nav-item:hover { background: var(--surface2); color: var(--text); }
 .nav-item.active { background: var(--accent); color: #fff; }
-
 .sidebar-stats { margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; gap: 1rem; flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; }
 .stat-num { font-size: 1.3rem; font-weight: 700; color: var(--accent2); }
 .stat-label { font-size: 0.72rem; color: var(--muted); }
 
 /* main */
-.main { flex: 1; padding: 2rem; overflow-y: auto; }
+.main { flex: 1; padding: 2rem; overflow-y: auto; max-width: 960px; }
 .page-title { font-size: 1.6rem; font-weight: 700; margin-bottom: 1.5rem; }
 .title-count { font-size: 1rem; color: var(--muted); font-weight: 400; margin-left: 0.4rem; }
 
-/* cards */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 1.5rem; }
+/* card */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; }
 .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
-.card-icon { font-size: 1.1rem; }
 .card-title { font-weight: 600; font-size: 1rem; flex: 1; }
-.refresh-btn {
-  background: var(--surface2); color: var(--muted);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.3rem 0.7rem; font-size: 0.8rem;
-}
+.refresh-btn { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.7rem; font-size: 0.8rem; }
 .refresh-btn:hover:not(:disabled) { color: var(--text); }
 .refresh-btn:disabled { opacity: 0.5; cursor: default; }
-
-.summary-text { color: var(--text); line-height: 1.7; margin-bottom: 1rem; }
+.summary-text { line-height: 1.7; margin-bottom: 1rem; }
 .topics { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .topic-tag { background: var(--surface2); border: 1px solid var(--border); color: var(--accent2); padding: 0.2rem 0.6rem; border-radius: 20px; font-size: 0.8rem; }
 
 /* sections grid */
 .sections-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
-.section-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; transition: border-color 0.2s; }
+.section-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; transition: border-color 0.2s; }
 .section-card:hover { border-color: var(--accent); }
 .section-title { font-weight: 600; margin-bottom: 0.3rem; }
 .section-count { font-size: 0.8rem; color: var(--accent2); margin-bottom: 0.6rem; }
@@ -390,9 +366,9 @@ export const SUBFOLDERS_LABEL: Record<string, string> = {
 
 /* library */
 .folder-group { margin-bottom: 2rem; }
-.folder-title { font-size: 1rem; font-weight: 600; color: var(--muted); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.85rem; }
+.folder-title { font-size: 0.85rem; font-weight: 600; color: var(--muted); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
-.doc-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
+.doc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; cursor: pointer; transition: border-color 0.2s, transform 0.15s; }
 .doc-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .doc-name { font-weight: 600; margin-bottom: 0.15rem; font-size: 0.95rem; }
 .doc-filename { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; font-family: monospace; }
@@ -401,23 +377,27 @@ export const SUBFOLDERS_LABEL: Record<string, string> = {
 
 /* doc reader */
 .doc-reader { display: flex; flex-direction: column; gap: 1rem; }
-.doc-reader-header { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.doc-reader-header { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .back-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
 .back-btn:hover { border-color: var(--accent); }
-.doc-reader-title { font-weight: 600; flex: 1; }
-.doc-summary-box { background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.9rem; color: var(--text); line-height: 1.6; }
-.doc-raw { font-size: 0.8rem; max-height: 70vh; overflow-y: auto; }
+.doc-reader-title { font-weight: 600; flex: 1; font-size: 0.95rem; color: var(--muted); }
+.doc-summary-box { background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.9rem; line-height: 1.6; }
+.raw-toggle { margin-bottom: 0.5rem; }
 
 /* categories */
-.categories-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
-.cat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.categories-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.cat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; }
 .cat-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .cat-emoji { font-size: 1.2rem; }
 .cat-name { font-weight: 600; flex: 1; }
 .cat-count { background: var(--surface2); color: var(--accent2); font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 20px; }
 .cat-items { list-style: none; padding: 0; }
-.cat-items li { font-size: 0.82rem; color: var(--muted); padding: 0.2rem 0; border-bottom: 1px solid var(--border); }
-.cat-items li:last-child { border-bottom: none; }
+.cat-item { font-size: 0.82rem; color: var(--muted); padding: 0.25rem 0.4rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.3rem; border-radius: 4px; }
+.cat-item:last-child { border-bottom: none; }
+.cat-item-doc { cursor: pointer; }
+.cat-item-doc:hover { background: var(--surface2); color: var(--text); }
+.cat-item-icon { font-size: 0.75rem; flex-shrink: 0; }
+.cat-item-arrow { margin-left: auto; color: var(--accent); font-size: 0.8rem; flex-shrink: 0; }
 
 /* search */
 .search-box { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
@@ -425,17 +405,14 @@ export const SUBFOLDERS_LABEL: Record<string, string> = {
 .search-input:focus { border-color: var(--accent); }
 .search-btn { background: var(--accent); color: #fff; border-radius: 8px; padding: 0.7rem 1.2rem; font-size: 0.9rem; }
 .search-btn:disabled { opacity: 0.5; }
-
 .search-results { display: flex; flex-direction: column; gap: 0.75rem; }
 .result-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; }
+.result-item-doc:hover { border-color: var(--accent); }
 .result-header { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
 .result-badge { background: var(--accent); color: #fff; font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
 .result-type-badge { background: var(--surface2); color: var(--accent2); font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); }
 .result-source { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
 .result-text { font-size: 0.9rem; }
-
-/* raw */
-.raw-content { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.7; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
 
 /* loading */
 .loading-state { text-align: center; padding: 3rem; color: var(--muted); }
@@ -445,6 +422,40 @@ export const SUBFOLDERS_LABEL: Record<string, string> = {
 .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
 .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: scale(0); opacity: 0.3; } 40% { transform: scale(1); opacity: 1; } }
-
 .empty-state { text-align: center; color: var(--muted); padding: 2rem; }
+</style>
+
+<!-- Global styles for rendered markdown -->
+<style>
+.md-body {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.75rem 2rem;
+  color: var(--text);
+  line-height: 1.8;
+  font-size: 0.92rem;
+  overflow-y: auto;
+}
+.notes-md-body { max-height: 80vh; }
+.doc-reader .md-body { max-height: 75vh; }
+
+.md-body h1 { font-size: 1.5rem; font-weight: 700; margin: 1.5rem 0 0.75rem; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+.md-body h2 { font-size: 1.2rem; font-weight: 600; margin: 1.25rem 0 0.6rem; color: var(--text); }
+.md-body h3 { font-size: 1rem; font-weight: 600; margin: 1rem 0 0.5rem; color: var(--accent2); }
+.md-body h4 { font-size: 0.9rem; font-weight: 600; margin: 0.75rem 0 0.4rem; color: var(--muted); }
+.md-body p { margin: 0.5rem 0; }
+.md-body ul, .md-body ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+.md-body li { margin: 0.25rem 0; color: var(--muted); }
+.md-body strong { color: var(--text); font-weight: 600; }
+.md-body em { color: var(--accent2); font-style: italic; }
+.md-body code { background: var(--surface2); color: var(--accent2); padding: 0.15rem 0.4rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
+.md-body pre { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; margin: 0.75rem 0; }
+.md-body pre code { background: none; padding: 0; color: var(--text); font-size: 0.82rem; }
+.md-body blockquote { border-left: 3px solid var(--accent); padding-left: 1rem; color: var(--muted); margin: 0.75rem 0; font-style: italic; }
+.md-body table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
+.md-body th { background: var(--surface2); padding: 0.5rem 0.75rem; text-align: left; font-weight: 600; border: 1px solid var(--border); }
+.md-body td { padding: 0.4rem 0.75rem; border: 1px solid var(--border); color: var(--muted); }
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+.md-body a { color: var(--accent); }
 </style>
