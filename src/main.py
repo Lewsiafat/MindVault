@@ -646,6 +646,149 @@ def wiki_ingest_all():
     return results
 
 
+def _extract_concepts_from_summary(content: str) -> list[str]:
+    """Parse the '## 涉及概念' section from a summary page."""
+    lines = content.splitlines()
+    in_concepts = False
+    for line in lines:
+        if "涉及概念" in line and line.startswith("##"):
+            in_concepts = True
+            continue
+        if in_concepts:
+            if line.startswith("##"):
+                break
+            if line.strip():
+                # Split by comma or Chinese comma
+                raw = re.split(r"[,，、]", line.strip())
+                return [c.strip().lstrip("-• ").strip() for c in raw if c.strip()]
+    return []
+
+
+def _concept_slug(name: str) -> str:
+    slug = name.lower().strip()
+    slug = re.sub(r"[^\w\u4e00-\u9fff\-]", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "concept"
+
+
+@app.post("/api/wiki/synthesize")
+def wiki_synthesize(force: bool = False):
+    """Extract concepts from all summaries and generate cross-document concept pages."""
+    summaries_dir = WIKI_DIR / "summaries"
+    if not summaries_dir.exists():
+        return {"status": "error", "reason": "No summaries found. Run ingest first."}
+
+    summary_files = list(summaries_dir.glob("*.md"))
+    if not summary_files:
+        return {"status": "error", "reason": "No summaries found. Run ingest first."}
+
+    wiki_ensure_dirs()
+
+    # Step 1: Extract concepts from every summary
+    concept_sources: dict[str, list[dict]] = {}  # concept_name -> list of {slug, title, excerpt}
+    for sf in summary_files:
+        content = sf.read_text(encoding="utf-8")
+        concepts = _extract_concepts_from_summary(content)
+        title_m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+        title = title_m.group(1).replace(" — Summary", "").replace(" — 摘要", "").strip() if title_m else sf.stem
+        # Grab a short excerpt (first non-header, non-metadata line)
+        excerpt = ""
+        for line in content.splitlines():
+            if line.startswith(">") or line.startswith("#") or not line.strip():
+                continue
+            excerpt = line.strip()[:200]
+            break
+        for c in concepts:
+            if c:
+                concept_sources.setdefault(c, []).append({"slug": sf.stem, "title": title, "excerpt": excerpt})
+
+    # Step 2: Only synthesize concepts appearing in 2+ summaries
+    multi_source = {c: srcs for c, srcs in concept_sources.items() if len(srcs) >= 2}
+
+    if not multi_source:
+        # If no cross-doc concepts, still create single-source concept pages for rich concepts
+        multi_source = {c: srcs for c, srcs in concept_sources.items() if len(srcs) >= 1}
+
+    pages_dir = WIKI_DIR / "pages"
+    existing_slugs = {p.stem for p in pages_dir.glob("*.md")} if pages_dir.exists() else set()
+
+    created = []
+    skipped = []
+    errors = []
+
+    timestamp = datetime.now().isoformat(timespec="seconds")
+
+    for concept_name, sources in multi_source.items():
+        slug = _concept_slug(concept_name)
+        page_path = pages_dir / f"{slug}.md"
+
+        if page_path.exists() and not force:
+            skipped.append(slug)
+            continue
+
+        # Build context for Gemini
+        sources_text = "\n\n".join([
+            f"### 來自《{s['title']}》\n{s['excerpt']}"
+            for s in sources[:5]  # cap at 5 sources
+        ])
+
+        prompt = f"""你正在建立個人知識 Wiki。請為以下概念生成一個跨文件的綜合概念頁面。
+
+概念名稱：{concept_name}
+
+這個概念出現在以下 {len(sources)} 份文件中：
+{sources_text}
+
+用繁體中文，嚴格按照以下結構輸出（不要加任何其他文字、不要用 code fence）：
+
+## 定義
+（2-3 句話說明這個概念是什麼）
+
+## 在知識庫中的意義
+（這個概念對這個知識庫的主人有什麼具體意義？結合上面的文件內容說明）
+
+## 出現在以下文件
+{chr(10).join(f'- [[{s["slug"]}]]（{s["title"]}）' for s in sources)}
+
+## 相關延伸
+（提出 2-3 個值得進一步探討的問題或方向）"""
+
+        try:
+            body = gemini(prompt)
+        except Exception as e:
+            errors.append({"slug": slug, "reason": str(e)})
+            continue
+
+        header = f"""# {concept_name}
+
+> 類型：概念頁
+> 最後更新：{timestamp}
+> 出現在 {len(sources)} 份文件
+
+"""
+        page_path.write_text(header + body + "\n\n---\n_由 MindVault Wiki 合成_\n", encoding="utf-8")
+
+        wiki_append_log(f"""
+## {timestamp} — synthesize
+- 概念：{concept_name}
+- 來源文件數：{len(sources)}
+- 頁面：wiki/pages/{slug}.md
+
+""")
+        created.append({"slug": slug, "concept": concept_name, "sources": len(sources)})
+
+    wiki_rebuild_index()
+
+    return {
+        "status": "ok",
+        "total_concepts_found": len(concept_sources),
+        "synthesized": len(created),
+        "skipped": len(skipped),
+        "errors": errors,
+        "pages": created,
+    }
+
+
 # ─── static frontend ───────────────────────────────────────
 
 STATIC_DIR = Path(__file__).parent / "static"

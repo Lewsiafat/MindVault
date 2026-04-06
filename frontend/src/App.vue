@@ -36,6 +36,8 @@ const wikiPages = ref<{ pages: any[] }>({ pages: [] })
 const activeWikiPage = ref<{ slug: string, type: string, content: string } | null>(null)
 const wikiLoading = ref(false)
 const wikiIngestLoading = ref(false)
+const wikiSynthLoading = ref(false)
+const wikiSynthResult = ref<{ synthesized: number, total_concepts_found: number } | null>(null)
 const wikiStatusLoaded = ref(false)
 
 // Configure marked
@@ -140,6 +142,20 @@ async function ingestAll() {
     await fetchWikiPages()
   } finally {
     wikiIngestLoading.value = false
+  }
+}
+
+async function synthesizeConcepts(force = false) {
+  wikiSynthLoading.value = true
+  wikiSynthResult.value = null
+  try {
+    const r = await fetch(`${BASE}/api/wiki/synthesize?force=${force}`, { method: 'POST' })
+    const data = await r.json()
+    wikiSynthResult.value = data
+    await fetchWikiStatus()
+    await fetchWikiPages()
+  } finally {
+    wikiSynthLoading.value = false
   }
 }
 
@@ -495,6 +511,28 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Synthesis card -->
+          <div class="card" v-if="wikiStatus && wikiStatus.total_summaries > 0">
+            <div class="card-header">
+              <span>💡</span>
+              <span class="card-title">概念合成</span>
+              <button class="search-btn" @click="synthesizeConcepts()" :disabled="wikiSynthLoading"
+                style="padding: 0.35rem 0.9rem; font-size: 0.82rem">
+                {{ wikiSynthLoading ? '合成中...' : '合成概念頁' }}
+              </button>
+            </div>
+            <p style="font-size: 0.85rem; color: var(--muted); margin: 0 0 0.5rem">
+              從所有摘要頁中提取共同概念，自動生成跨文件的概念綜合頁面。
+            </p>
+            <div v-if="wikiSynthResult" class="wiki-synth-result">
+              <span>✨ 合成完成：找到 <strong>{{ wikiSynthResult.total_concepts_found }}</strong> 個概念，生成 <strong>{{ wikiSynthResult.synthesized }}</strong> 頁</span>
+            </div>
+            <div v-if="wikiStatus.total_pages > 0" class="wiki-all-done" style="margin-top: 0.5rem">
+              目前有 {{ wikiStatus.total_pages }} 個概念頁 —
+              <span class="wiki-resynth-link" @click="synthesizeConcepts(true)">重新合成</span>
+            </div>
+          </div>
+
           <!-- Wiki pages -->
           <div v-if="wikiLoading" class="loading-state">
             <div class="loading-dots"><span></span><span></span><span></span></div>
@@ -658,6 +696,8 @@ onMounted(() => {
 .wiki-pending-btn:disabled { opacity: 0.5; cursor: default; }
 .wiki-all-done { text-align: center; color: var(--accent2); font-size: 0.9rem; padding: 0.5rem; }
 .wiki-source-tag { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; font-family: monospace; }
+.wiki-synth-result { background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; color: var(--text); }
+.wiki-resynth-link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 0.85rem; }
 
 /* loading */
 .loading-state { text-align: center; padding: 3rem; color: var(--muted); }
