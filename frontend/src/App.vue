@@ -4,7 +4,7 @@ import { marked } from 'marked'
 
 const BASE = import.meta.env.PROD ? '/mind-vault' : ''
 
-type View = 'overview' | 'library' | 'categories' | 'search' | 'raw'
+type View = 'overview' | 'library' | 'categories' | 'search' | 'raw' | 'wiki'
 
 const view = ref<View>('overview')
 const summaryLoading = ref(false)
@@ -29,6 +29,14 @@ const libLoaded = ref(false)
 
 const stats = ref<{ total_docs: number, total_words: number, notes_items: number, folder_counts: Record<string, number> } | null>(null)
 const statsLoading = ref(false)
+
+// Wiki
+const wikiStatus = ref<{ wiki_exists: boolean, total_summaries: number, total_pages: number, pending_count: number, pending_ingest: any[] } | null>(null)
+const wikiPages = ref<{ pages: any[] }>({ pages: [] })
+const activeWikiPage = ref<{ slug: string, type: string, content: string } | null>(null)
+const wikiLoading = ref(false)
+const wikiIngestLoading = ref(false)
+const wikiStatusLoaded = ref(false)
 
 // Configure marked
 marked.setOptions({ breaks: true, gfm: true })
@@ -85,6 +93,53 @@ async function fetchStats() {
     stats.value = await r.json()
   } finally {
     statsLoading.value = false
+  }
+}
+
+async function fetchWikiStatus() {
+  const r = await fetch(`${BASE}/api/wiki/status`)
+  wikiStatus.value = await r.json()
+  wikiStatusLoaded.value = true
+}
+
+async function fetchWikiPages() {
+  wikiLoading.value = true
+  try {
+    const r = await fetch(`${BASE}/api/wiki/pages`)
+    wikiPages.value = await r.json()
+  } finally {
+    wikiLoading.value = false
+  }
+}
+
+async function openWikiPage(slug: string, type: string) {
+  const r = await fetch(`${BASE}/api/wiki/page?slug=${encodeURIComponent(slug)}&type=${type}`)
+  activeWikiPage.value = await r.json()
+}
+
+async function ingestDoc(folder: string, name: string) {
+  wikiIngestLoading.value = true
+  try {
+    await fetch(`${BASE}/api/wiki/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder, name })
+    })
+    await fetchWikiStatus()
+    await fetchWikiPages()
+  } finally {
+    wikiIngestLoading.value = false
+  }
+}
+
+async function ingestAll() {
+  wikiIngestLoading.value = true
+  try {
+    await fetch(`${BASE}/api/wiki/ingest-all`, { method: 'POST' })
+    await fetchWikiStatus()
+    await fetchWikiPages()
+  } finally {
+    wikiIngestLoading.value = false
   }
 }
 
@@ -148,6 +203,7 @@ function formatDate(ts: number): string {
 function setView(v: View) {
   view.value = v
   activeDoc.value = null
+  activeWikiPage.value = null
   if (v === 'overview') {
     if (!summaryLoaded.value) fetchSummary()
     fetchStats()
@@ -155,6 +211,10 @@ function setView(v: View) {
   }
   if (v === 'categories' && !catLoaded.value) fetchCategories()
   if (v === 'library' && !libLoaded.value) fetchLibrary()
+  if (v === 'wiki' && !wikiStatusLoaded.value) {
+    fetchWikiStatus()
+    fetchWikiPages()
+  }
 }
 
 const folderEmoji: Record<string, string> = {
@@ -195,6 +255,9 @@ onMounted(() => {
         </button>
         <button :class="['nav-item', view === 'raw' && 'active']" @click="setView('raw')">
           <span>📄</span> 原始筆記
+        </button>
+        <button :class="['nav-item', view === 'wiki' && 'active']" @click="setView('wiki')">
+          <span>📖</span> Wiki
         </button>
       </nav>
       <div class="sidebar-stats" v-if="notes.items.length">
@@ -374,6 +437,100 @@ onMounted(() => {
         </div>
       </section>
 
+      <!-- ── WIKI ── -->
+      <section v-if="view === 'wiki'" class="section">
+        <!-- Page reader -->
+        <div v-if="activeWikiPage" class="doc-reader">
+          <div class="doc-reader-header">
+            <button class="back-btn" @click="activeWikiPage = null">← 返回 Wiki</button>
+            <span class="doc-reader-title">{{ activeWikiPage.slug }}</span>
+            <span class="result-type-badge">{{ activeWikiPage.type === 'summary' ? '📝 摘要' : '💡 概念' }}</span>
+          </div>
+          <div class="md-body" v-html="renderMd(activeWikiPage.content)"></div>
+        </div>
+
+        <template v-else>
+          <h1 class="page-title">
+            Wiki
+            <span class="title-count" v-if="wikiStatus">{{ wikiStatus.total_summaries + wikiStatus.total_pages }} 頁</span>
+          </h1>
+
+          <!-- Status card -->
+          <div class="card">
+            <div class="card-header">
+              <span>⚙️</span>
+              <span class="card-title">Wiki 狀態</span>
+              <button class="refresh-btn" @click="fetchWikiStatus()">重新整理</button>
+            </div>
+            <div v-if="wikiStatus">
+              <div class="stats-dashboard" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 0.75rem">
+                <div class="stat-card">
+                  <div class="stat-card-num">{{ wikiStatus.total_summaries }}</div>
+                  <div class="stat-card-label">📝 摘要頁</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-card-num">{{ wikiStatus.total_pages }}</div>
+                  <div class="stat-card-label">💡 概念頁</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-card-num">{{ wikiStatus.pending_count }}</div>
+                  <div class="stat-card-label">⏳ 待匯入</div>
+                </div>
+              </div>
+              <div v-if="wikiStatus.pending_count > 0" class="wiki-pending">
+                <div class="wiki-pending-header">
+                  <span class="section-subtitle" style="margin:0">待匯入文件</span>
+                  <button class="search-btn" @click="ingestAll" :disabled="wikiIngestLoading" style="padding: 0.35rem 0.9rem; font-size: 0.82rem">
+                    {{ wikiIngestLoading ? '匯入中...' : `全部匯入 (${wikiStatus.pending_count})` }}
+                  </button>
+                </div>
+                <div class="wiki-pending-list">
+                  <button v-for="p in wikiStatus.pending_ingest" :key="p.slug"
+                    class="wiki-pending-btn" @click="ingestDoc(p.folder, p.name)" :disabled="wikiIngestLoading">
+                    {{ p.name }}
+                  </button>
+                </div>
+              </div>
+              <div v-else class="wiki-all-done">✅ 所有文件已匯入 Wiki</div>
+            </div>
+          </div>
+
+          <!-- Wiki pages -->
+          <div v-if="wikiLoading" class="loading-state">
+            <div class="loading-dots"><span></span><span></span><span></span></div>
+          </div>
+          <div v-else>
+            <template v-if="wikiPages.pages?.filter((p:any) => p.type === 'summary').length">
+              <h2 class="section-subtitle">📝 摘要頁</h2>
+              <div class="doc-grid">
+                <div class="doc-card" v-for="p in wikiPages.pages?.filter((p:any) => p.type === 'summary')" :key="p.slug"
+                  @click="openWikiPage(p.slug, p.type)">
+                  <div class="doc-name">{{ p.title }}</div>
+                  <div class="doc-filename wiki-source-tag">📝 摘要</div>
+                  <div class="doc-size">{{ p.updated }}</div>
+                </div>
+              </div>
+            </template>
+
+            <template v-if="wikiPages.pages?.filter((p:any) => p.type === 'concept').length">
+              <h2 class="section-subtitle" style="margin-top: 1.5rem">💡 概念頁</h2>
+              <div class="doc-grid">
+                <div class="doc-card" v-for="p in wikiPages.pages?.filter((p:any) => p.type === 'concept')" :key="p.slug"
+                  @click="openWikiPage(p.slug, p.type)">
+                  <div class="doc-name">{{ p.title }}</div>
+                  <div class="doc-filename wiki-source-tag">💡 概念</div>
+                  <div class="doc-size">{{ p.updated }}</div>
+                </div>
+              </div>
+            </template>
+
+            <div v-if="!wikiPages.pages?.length" class="empty-state" style="padding: 2rem 0">
+              尚無 Wiki 頁面。點擊「全部匯入」開始從文件生成摘要。
+            </div>
+          </div>
+        </template>
+      </section>
+
       <!-- ── RAW ── -->
       <section v-if="view === 'raw'" class="section">
         <h1 class="page-title">原始筆記</h1>
@@ -491,6 +648,16 @@ onMounted(() => {
 .result-type-badge { background: var(--surface2); color: var(--accent2); font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); }
 .result-source { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
 .result-text { font-size: 0.9rem; }
+
+/* wiki */
+.wiki-pending { background: var(--surface2); border-radius: 8px; padding: 0.75rem 1rem; }
+.wiki-pending-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
+.wiki-pending-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.wiki-pending-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.65rem; font-size: 0.78rem; color: var(--muted); cursor: pointer; }
+.wiki-pending-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.wiki-pending-btn:disabled { opacity: 0.5; cursor: default; }
+.wiki-all-done { text-align: center; color: var(--accent2); font-size: 0.9rem; padding: 0.5rem; }
+.wiki-source-tag { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; font-family: monospace; }
 
 /* loading */
 .loading-state { text-align: center; padding: 3rem; color: var(--muted); }

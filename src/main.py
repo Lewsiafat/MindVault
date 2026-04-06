@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +16,7 @@ app = FastAPI(title="MindVault", root_path=root_path)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 NOTES_FILE = DATA_DIR / "notes.md"
+WIKI_DIR = DATA_DIR / "wiki"
 
 # Sub-folders to scan
 SUBFOLDERS = {
@@ -415,6 +417,233 @@ def search(q: str = ""):
 def health():
     docs = load_all_docs()
     return {"status": "ok", "notes_exists": NOTES_FILE.exists(), "total_docs": len(docs)}
+
+
+# ─── wiki helpers ───────────────────────────────────────────
+
+def wiki_ensure_dirs():
+    (WIKI_DIR / "summaries").mkdir(parents=True, exist_ok=True)
+    (WIKI_DIR / "pages").mkdir(parents=True, exist_ok=True)
+
+
+def wiki_append_log(entry: str):
+    log_path = WIKI_DIR / "log.md"
+    if not log_path.exists():
+        log_path.write_text("# Wiki Log\n\n", encoding="utf-8")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+
+def wiki_rebuild_index():
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    summaries_dir = WIKI_DIR / "summaries"
+    pages_dir = WIKI_DIR / "pages"
+    summaries = sorted(summaries_dir.glob("*.md")) if summaries_dir.exists() else []
+    pages = sorted(pages_dir.glob("*.md")) if pages_dir.exists() else []
+
+    lines = [f"# Wiki Index\n_Last updated: {timestamp}_\n\n## Pages\n",
+             "| slug | title | type | updated |",
+             "|------|-------|------|---------|"]
+
+    for p in summaries:
+        first = p.read_text(encoding="utf-8").splitlines()[0].lstrip("# ")
+        mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d")
+        lines.append(f"| {p.stem} | {first} | summary | {mtime} |")
+
+    for p in pages:
+        first = p.read_text(encoding="utf-8").splitlines()[0].lstrip("# ")
+        mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d")
+        lines.append(f"| {p.stem} | {first} | concept | {mtime} |")
+
+    (WIKI_DIR / "index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def wiki_parse_index() -> list[dict]:
+    index_path = WIKI_DIR / "index.md"
+    if not index_path.exists():
+        return []
+    rows = []
+    in_table = False
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("| slug"):
+            in_table = True
+            continue
+        if line.startswith("|---"):
+            continue
+        if in_table and line.startswith("|"):
+            parts = [p.strip() for p in line.strip("|").split("|")]
+            if len(parts) >= 4:
+                rows.append({"slug": parts[0], "title": parts[1],
+                              "type": parts[2], "updated": parts[3]})
+        elif in_table:
+            break
+    return rows
+
+
+# ─── wiki routes ────────────────────────────────────────────
+
+@app.get("/api/wiki/status")
+def wiki_status():
+    summaries_dir = WIKI_DIR / "summaries"
+    pages_dir = WIKI_DIR / "pages"
+    summaries = list(summaries_dir.glob("*.md")) if summaries_dir.exists() else []
+    pages = list(pages_dir.glob("*.md")) if pages_dir.exists() else []
+    ingested_slugs = {p.stem for p in summaries}
+
+    docs = load_all_docs()
+    pending = [
+        {"folder": d["folder"], "name": d["name"], "slug": d["name"].replace(".md", "")}
+        for d in docs
+        if d["folder"] != "root" and d["name"].replace(".md", "") not in ingested_slugs
+    ]
+
+    return {
+        "wiki_exists": WIKI_DIR.exists(),
+        "total_summaries": len(summaries),
+        "total_pages": len(pages),
+        "pending_ingest": pending,
+        "pending_count": len(pending),
+    }
+
+
+@app.get("/api/wiki/pages")
+def wiki_list_pages():
+    return {"pages": wiki_parse_index()}
+
+
+@app.get("/api/wiki/page")
+def wiki_get_page(slug: str, type: str = "summary"):
+    if type == "summary":
+        path = WIKI_DIR / "summaries" / f"{slug}.md"
+    else:
+        path = WIKI_DIR / "pages" / f"{slug}.md"
+    if not path.exists() or not path.is_relative_to(WIKI_DIR):
+        from fastapi import HTTPException
+        raise HTTPException(404, "Wiki page not found")
+    content = path.read_text(encoding="utf-8")
+    return {"slug": slug, "type": type, "content": content}
+
+
+@app.get("/api/wiki/log")
+def wiki_get_log():
+    log_path = WIKI_DIR / "log.md"
+    if not log_path.exists():
+        return {"log": "", "entries": 0}
+    content = log_path.read_text(encoding="utf-8")
+    entries = content.count("\n## ")
+    return {"log": content, "entries": entries}
+
+
+class IngestRequest(BaseModel):
+    folder: str
+    name: str
+    force: bool = False
+
+
+def _do_ingest(folder: str, name: str, force: bool = False) -> dict:
+    """Core ingest logic — shared by single and batch endpoints."""
+    if folder == "root":
+        path = DATA_DIR / name
+    else:
+        path = DATA_DIR / folder / name
+
+    if not path.exists() or not path.is_relative_to(DATA_DIR):
+        return {"status": "error", "reason": "not found", "slug": name.replace(".md", "")}
+
+    slug = name.replace(".md", "")
+    wiki_ensure_dirs()
+    summary_path = WIKI_DIR / "summaries" / f"{slug}.md"
+
+    if summary_path.exists() and not force:
+        return {"status": "skipped", "reason": "already ingested", "slug": slug}
+
+    content = path.read_text(encoding="utf-8")
+    m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+    title = m.group(1) if m else name.replace(".md", "")
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    word_count = len(content.split())
+
+    prompt = f"""你正在建立個人知識 Wiki。請為以下文件生成一個 Wiki 摘要頁面。
+
+用繁體中文，嚴格按照以下結構輸出（不要加任何其他文字、不要用 code fence）：
+
+## 這是什麼
+（1 段話：這份文件在講什麼）
+
+## 重點整理
+- （重點 1）
+- （重點 2）
+- （最多 8 個重點）
+
+## 涉及概念
+（逗號分隔的概念名稱，例如：Claude Code、prompt engineering、AI 工具）
+
+## 值得保存的段落
+> （從原文直接引用一段最有價值的文字）
+
+文件標題：{title}
+文件內容：
+{content[:4000]}"""
+
+    try:
+        body = gemini(prompt)
+    except Exception as e:
+        return {"status": "error", "reason": str(e), "slug": slug}
+
+    # Extract concepts from response for log
+    concepts = ""
+    for line in body.splitlines():
+        if line.startswith("## 涉及概念"):
+            continue
+        if concepts == "" and "## 涉及概念" in "".join(body.splitlines()[:body.splitlines().index(line) if line in body.splitlines() else 0]):
+            concepts = line.strip()
+            break
+
+    header = f"""# {title}
+
+> 來源：`{folder}/{name}`
+> 匯入時間：{timestamp}
+> 字數：{word_count}
+
+"""
+    summary_path.write_text(header + body + "\n\n---\n_由 MindVault Wiki 生成_\n", encoding="utf-8")
+
+    log_entry = f"""
+## {timestamp} — ingest
+- 來源：{folder}/{name}
+- 動作：{'更新' if summary_path.exists() else '建立'}摘要頁
+- 頁面：wiki/summaries/{slug}.md
+
+"""
+    wiki_append_log(log_entry)
+    wiki_rebuild_index()
+
+    return {"status": "ok", "slug": slug, "title": title}
+
+
+@app.post("/api/wiki/ingest")
+def wiki_ingest(req: IngestRequest):
+    return _do_ingest(req.folder, req.name, req.force)
+
+
+@app.post("/api/wiki/ingest-all")
+def wiki_ingest_all():
+    docs = load_all_docs()
+    summaries_dir = WIKI_DIR / "summaries"
+    ingested_slugs = {p.stem for p in summaries_dir.glob("*.md")} if summaries_dir.exists() else set()
+    pending = [d for d in docs if d["folder"] != "root" and d["name"].replace(".md", "") not in ingested_slugs]
+
+    results = {"ingested": [], "skipped": [], "errors": []}
+    for d in pending:
+        r = _do_ingest(d["folder"], d["name"])
+        if r["status"] == "ok":
+            results["ingested"].append(r["slug"])
+        elif r["status"] == "skipped":
+            results["skipped"].append(r["slug"])
+        else:
+            results["errors"].append({"slug": r["slug"], "reason": r.get("reason", "")})
+
+    return results
 
 
 # ─── static frontend ───────────────────────────────────────
