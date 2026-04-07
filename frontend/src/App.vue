@@ -40,6 +40,22 @@ const wikiSynthLoading = ref(false)
 const wikiSynthResult = ref<{ synthesized: number, total_concepts_found: number } | null>(null)
 const wikiStatusLoaded = ref(false)
 
+// Lint
+const lintResult = ref<{ issues: any[], suggestions: any[], health_score: number, summary: string, stats: any } | null>(null)
+const lintLoading = ref(false)
+
+// Theme
+const isDark = ref(localStorage.getItem('mv-theme') !== 'light')
+function toggleTheme() {
+  isDark.value = !isDark.value
+  localStorage.setItem('mv-theme', isDark.value ? 'dark' : 'light')
+  document.documentElement.setAttribute('data-theme', isDark.value ? '' : 'light')
+  if (!isDark.value) document.documentElement.setAttribute('data-theme', 'light')
+  else document.documentElement.removeAttribute('data-theme')
+}
+// Apply saved theme on load
+if (!isDark.value) document.documentElement.setAttribute('data-theme', 'light')
+
 // Configure marked
 marked.setOptions({ breaks: true, gfm: true })
 
@@ -156,6 +172,17 @@ async function synthesizeConcepts(force = false) {
     await fetchWikiPages()
   } finally {
     wikiSynthLoading.value = false
+  }
+}
+
+async function runLint() {
+  lintLoading.value = true
+  lintResult.value = null
+  try {
+    const r = await fetch(`${BASE}/api/wiki/lint`)
+    lintResult.value = await r.json()
+  } finally {
+    lintLoading.value = false
   }
 }
 
@@ -276,6 +303,10 @@ onMounted(() => {
           <span>📖</span> Wiki
         </button>
       </nav>
+      <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切換淺色主題' : '切換深色主題'">
+        {{ isDark ? '☀️' : '🌙' }}
+      </button>
+
       <div class="sidebar-stats" v-if="notes.items.length">
         <div class="stat">
           <span class="stat-num">{{ notes.sections.length }}</span>
@@ -533,6 +564,43 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Lint card -->
+          <div class="card" v-if="wikiStatus && wikiStatus.total_summaries > 0">
+            <div class="card-header">
+              <span>🔍</span>
+              <span class="card-title">Wiki 健康檢查</span>
+              <button class="search-btn" @click="runLint" :disabled="lintLoading"
+                style="padding: 0.35rem 0.9rem; font-size: 0.82rem">
+                {{ lintLoading ? '檢查中...' : '執行 Lint' }}
+              </button>
+            </div>
+            <p style="font-size: 0.85rem; color: var(--muted); margin: 0">
+              分析矛盾、孤兒頁、缺失連結，並提出改善建議。
+            </p>
+            <div v-if="lintResult" class="lint-report">
+              <div class="lint-score-row">
+                <div class="lint-score" :class="lintResult.health_score >= 80 ? 'score-good' : lintResult.health_score >= 50 ? 'score-mid' : 'score-bad'">
+                  {{ lintResult.health_score }}
+                </div>
+                <div class="lint-summary">{{ lintResult.summary }}</div>
+              </div>
+              <div v-if="lintResult.issues?.length" class="lint-section">
+                <div class="lint-section-title">⚠️ 發現問題 ({{ lintResult.issues.length }})</div>
+                <div class="lint-issue" v-for="(issue, i) in lintResult.issues" :key="i"
+                  :class="`issue-${issue.severity}`">
+                  <span class="issue-badge">{{ issue.type }}</span>
+                  <span class="issue-desc">{{ issue.description }}</span>
+                </div>
+              </div>
+              <div v-if="lintResult.suggestions?.length" class="lint-section">
+                <div class="lint-section-title">💡 改善建議</div>
+                <div class="lint-suggestion" v-for="(s, i) in lintResult.suggestions" :key="i">
+                  <strong>{{ s.action }}</strong> — {{ s.reason }}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Wiki pages -->
           <div v-if="wikiLoading" class="loading-state">
             <div class="loading-dots"><span></span><span></span><span></span></div>
@@ -698,6 +766,29 @@ onMounted(() => {
 .wiki-source-tag { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; font-family: monospace; }
 .wiki-synth-result { background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; color: var(--text); }
 .wiki-resynth-link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 0.85rem; }
+
+/* lint */
+.lint-report { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.lint-score-row { display: flex; align-items: center; gap: 1rem; }
+.lint-score { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.15rem; font-weight: 700; flex-shrink: 0; }
+.score-good { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); border: 2px solid var(--success); }
+.score-mid { background: color-mix(in srgb, #f59e0b 15%, transparent); color: #f59e0b; border: 2px solid #f59e0b; }
+.score-bad { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); border: 2px solid var(--danger); }
+.lint-summary { font-size: 0.9rem; color: var(--text); line-height: 1.5; }
+.lint-section { display: flex; flex-direction: column; gap: 0.4rem; }
+.lint-section-title { font-size: 0.8rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.lint-issue { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.83rem; }
+.issue-high { background: color-mix(in srgb, var(--danger) 10%, transparent); border-left: 3px solid var(--danger); }
+.issue-medium { background: color-mix(in srgb, #f59e0b 10%, transparent); border-left: 3px solid #f59e0b; }
+.issue-low { background: var(--surface2); border-left: 3px solid var(--border); }
+.issue-badge { background: var(--surface2); color: var(--accent); font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; white-space: nowrap; flex-shrink: 0; font-family: monospace; }
+.issue-desc { color: var(--text); }
+.lint-suggestion { font-size: 0.83rem; color: var(--muted); padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
+.lint-suggestion:last-child { border-bottom: none; }
+
+/* theme toggle */
+.theme-toggle { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 1rem; margin-bottom: 0.75rem; width: 100%; text-align: left; color: var(--muted); }
+.theme-toggle:hover { border-color: var(--accent); }
 
 /* loading */
 .loading-state { text-align: center; padding: 3rem; color: var(--muted); }

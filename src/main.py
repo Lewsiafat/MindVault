@@ -789,6 +789,91 @@ def wiki_synthesize(force: bool = False):
     }
 
 
+@app.get("/api/wiki/lint")
+def wiki_lint():
+    """Health-check the wiki: find contradictions, orphans, stale content, gaps."""
+    summaries_dir = WIKI_DIR / "summaries"
+    pages_dir = WIKI_DIR / "pages"
+
+    summaries = list(summaries_dir.glob("*.md")) if summaries_dir.exists() else []
+    pages = list(pages_dir.glob("*.md")) if pages_dir.exists() else []
+
+    if not summaries and not pages:
+        return {"status": "empty", "issues": [], "suggestions": []}
+
+    # Build a compact overview of all wiki pages for Gemini
+    page_overviews = []
+    for p in summaries[:10]:
+        content = p.read_text(encoding="utf-8")
+        concepts = _extract_concepts_from_summary(content)
+        title_m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+        title = title_m.group(1) if title_m else p.stem
+        page_overviews.append(f"[摘要] {title}（slug: {p.stem}）\n概念: {', '.join(concepts[:5])}")
+
+    for p in pages[:10]:
+        content = p.read_text(encoding="utf-8")
+        title_m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+        title = title_m.group(1) if title_m else p.stem
+        # Find linked slugs [[...]]
+        links = re.findall(r"\[\[([^\]]+)\]\]", content)
+        page_overviews.append(f"[概念頁] {title}（slug: {p.stem}）\n連結: {', '.join(links[:5]) or '無'}")
+
+    # Build inbound link count (for orphan detection)
+    all_slugs = {p.stem for p in summaries + pages}
+    inbound: dict[str, int] = {s: 0 for s in all_slugs}
+    for p in pages:
+        content = p.read_text(encoding="utf-8")
+        for link in re.findall(r"\[\[([^\]]+)\]\]", content):
+            if link in inbound:
+                inbound[link] += 1
+
+    orphan_summaries = [s for s, count in inbound.items() if count == 0 and s in {p.stem for p in summaries}]
+
+    overview_text = "\n\n".join(page_overviews)
+
+    prompt = f"""你是一個個人知識 Wiki 的健康檢查工具。請分析以下 Wiki 頁面概覽，找出需要改善的地方。
+
+Wiki 概覽（共 {len(summaries)} 個摘要頁、{len(pages)} 個概念頁）：
+{overview_text}
+
+孤兒摘要頁（沒有任何概念頁連結到它）：{', '.join(orphan_summaries) or '無'}
+
+請用繁體中文，嚴格按照以下 JSON 格式輸出（不要加任何其他文字、不要用 code fence）：
+{{
+  "issues": [
+    {{"type": "orphan|contradiction|stale|missing_link|gap", "severity": "high|medium|low", "description": "說明問題", "affected": ["slug1", "slug2"]}}
+  ],
+  "suggestions": [
+    {{"action": "建議動作", "reason": "原因說明"}}
+  ],
+  "health_score": 0-100,
+  "summary": "一句話總結 Wiki 的健康狀態"
+}}"""
+
+    try:
+        result = json.loads(gemini(prompt))
+    except Exception as e:
+        # Fallback: basic orphan detection without AI
+        issues = [
+            {"type": "orphan", "severity": "low", "description": f"摘要頁 {s} 沒有被任何概念頁連結", "affected": [s]}
+            for s in orphan_summaries
+        ]
+        result = {
+            "issues": issues,
+            "suggestions": [{"action": "執行概念合成", "reason": "可以自動建立概念頁並連結孤兒摘要"}],
+            "health_score": max(0, 100 - len(orphan_summaries) * 10),
+            "summary": f"基礎分析完成。AI 分析暫時無法使用：{e}",
+        }
+
+    result["stats"] = {
+        "total_summaries": len(summaries),
+        "total_pages": len(pages),
+        "orphan_summaries": len(orphan_summaries),
+    }
+    result["timestamp"] = datetime.now().isoformat(timespec="seconds")
+    return result
+
+
 # ─── static frontend ───────────────────────────────────────
 
 STATIC_DIR = Path(__file__).parent / "static"
