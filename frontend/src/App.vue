@@ -43,6 +43,7 @@ const wikiStatusLoaded = ref(false)
 // Lint
 const lintResult = ref<{ issues: any[], suggestions: any[], health_score: number, summary: string, stats: any } | null>(null)
 const lintLoading = ref(false)
+const fixingIssueIdx = ref<number | null>(null)
 
 // Theme
 const isDark = ref(localStorage.getItem('mv-theme') !== 'light')
@@ -183,6 +184,23 @@ async function runLint() {
     lintResult.value = await r.json()
   } finally {
     lintLoading.value = false
+  }
+}
+
+async function fixIssue(issue: any, idx: number) {
+  fixingIssueIdx.value = idx
+  try {
+    await fetch(`${BASE}/api/wiki/fix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_type: issue.type, affected: issue.affected || [] })
+    })
+    // Re-run lint to show updated state
+    await runLint()
+    await fetchWikiStatus()
+    await fetchWikiPages()
+  } finally {
+    fixingIssueIdx.value = null
   }
 }
 
@@ -590,6 +608,18 @@ onMounted(() => {
                   :class="`issue-${issue.severity}`">
                   <span class="issue-badge">{{ issue.type }}</span>
                   <span class="issue-desc">{{ issue.description }}</span>
+                  <div class="issue-actions">
+                    <span v-for="slug in (issue.affected || []).slice(0, 2)" :key="slug"
+                      class="issue-slug-link"
+                      @click="openWikiPage(slug, 'summary')">
+                      {{ slug }}
+                    </span>
+                    <button class="issue-fix-btn"
+                      :disabled="fixingIssueIdx !== null"
+                      @click="fixIssue(issue, i)">
+                      {{ fixingIssueIdx === i ? '修復中...' : '→ 修復' }}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div v-if="lintResult.suggestions?.length" class="lint-section">
@@ -782,7 +812,13 @@ onMounted(() => {
 .issue-medium { background: color-mix(in srgb, #f59e0b 10%, transparent); border-left: 3px solid #f59e0b; }
 .issue-low { background: var(--surface2); border-left: 3px solid var(--border); }
 .issue-badge { background: var(--surface2); color: var(--accent); font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; white-space: nowrap; flex-shrink: 0; font-family: monospace; }
-.issue-desc { color: var(--text); }
+.issue-desc { color: var(--text); flex: 1; }
+.issue-actions { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.issue-slug-link { font-size: 0.7rem; color: var(--accent2); font-family: monospace; cursor: pointer; text-decoration: underline; white-space: nowrap; }
+.issue-slug-link:hover { color: var(--accent); }
+.issue-fix-btn { background: var(--accent); color: #fff; border-radius: 5px; padding: 0.2rem 0.55rem; font-size: 0.75rem; white-space: nowrap; flex-shrink: 0; }
+.issue-fix-btn:disabled { opacity: 0.5; cursor: default; }
+.issue-fix-btn:hover:not(:disabled) { opacity: 0.85; }
 .lint-suggestion { font-size: 0.83rem; color: var(--muted); padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
 .lint-suggestion:last-child { border-bottom: none; }
 

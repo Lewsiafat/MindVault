@@ -789,6 +789,52 @@ def wiki_synthesize(force: bool = False):
     }
 
 
+class FixRequest(BaseModel):
+    issue_type: str
+    affected: list[str] = []
+
+
+@app.post("/api/wiki/fix")
+def wiki_fix(req: FixRequest):
+    """Auto-fix a lint issue based on type."""
+    docs = load_all_docs()
+    slug_to_doc = {
+        d["name"].replace(".md", ""): d
+        for d in docs if d["folder"] != "root"
+    }
+
+    if req.issue_type in ("orphan", "missing_link", "gap"):
+        # Best fix: re-synthesize with force to create/update concept pages
+        return wiki_synthesize(force=True)
+
+    elif req.issue_type == "stale":
+        # Re-ingest affected source docs
+        results = []
+        for slug in req.affected:
+            doc = slug_to_doc.get(slug)
+            if doc:
+                r = _do_ingest(doc["folder"], doc["name"], force=True)
+                results.append(r)
+            else:
+                results.append({"status": "error", "slug": slug, "reason": "source not found"})
+        return {"status": "ok", "fixed": len([r for r in results if r.get("status") == "ok"]), "results": results}
+
+    elif req.issue_type == "contradiction":
+        # Re-ingest all affected docs to refresh content
+        results = []
+        for slug in req.affected:
+            doc = slug_to_doc.get(slug)
+            if doc:
+                r = _do_ingest(doc["folder"], doc["name"], force=True)
+                results.append(r)
+        # Then re-synthesize concepts
+        wiki_synthesize(force=True)
+        return {"status": "ok", "message": "重新匯入並更新概念頁", "results": results}
+
+    else:
+        return {"status": "skipped", "message": f"此問題類型（{req.issue_type}）暫無自動修復方案"}
+
+
 @app.get("/api/wiki/lint")
 def wiki_lint():
     """Health-check the wiki: find contradictions, orphans, stale content, gaps."""
