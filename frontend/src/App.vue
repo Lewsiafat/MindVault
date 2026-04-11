@@ -45,6 +45,11 @@ const lintResult = ref<{ issues: any[], suggestions: any[], health_score: number
 const lintLoading = ref(false)
 const fixingIssueIdx = ref<number | null>(null)
 
+// Mobile sidebar
+const sidebarOpen = ref(false)
+function toggleSidebar() { sidebarOpen.value = !sidebarOpen.value }
+function closeSidebar() { sidebarOpen.value = false }
+
 // Theme
 const isDark = ref(localStorage.getItem('mv-theme') !== 'light')
 function toggleTheme() {
@@ -265,6 +270,7 @@ function setView(v: View) {
   view.value = v
   activeDoc.value = null
   activeWikiPage.value = null
+  closeSidebar()
   if (v === 'overview') {
     if (!summaryLoaded.value) fetchSummary()
     fetchStats()
@@ -294,12 +300,27 @@ onMounted(() => {
 </script>
 
 <template>
+  <!-- Mobile top bar -->
+  <header class="mobile-header">
+    <button class="hamburger" @click="toggleSidebar" aria-label="選單">
+      <span></span><span></span><span></span>
+    </button>
+    <span class="mobile-logo">🧠 MindVault</span>
+    <button class="theme-toggle-mobile" @click="toggleTheme" :title="isDark ? '切換淺色' : '切換深色'">
+      {{ isDark ? '☀️' : '🌙' }}
+    </button>
+  </header>
+
   <div class="layout">
+    <!-- Sidebar overlay backdrop -->
+    <div v-if="sidebarOpen" class="sidebar-backdrop" @click="closeSidebar"></div>
+
     <!-- sidebar -->
-    <aside class="sidebar">
+    <aside :class="['sidebar', sidebarOpen && 'sidebar--open']">
       <div class="logo">
         <span class="logo-icon">🧠</span>
         <span class="logo-text">MindVault</span>
+        <button class="sidebar-close" @click="closeSidebar" aria-label="關閉">✕</button>
       </div>
       <nav class="nav">
         <button :class="['nav-item', view === 'overview' && 'active']" @click="setView('overview')">
@@ -825,6 +846,68 @@ onMounted(() => {
 /* theme toggle */
 .theme-toggle { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 1rem; margin-bottom: 0.75rem; width: 100%; text-align: left; color: var(--muted); }
 .theme-toggle:hover { border-color: var(--accent); }
+
+/* ── Mobile header ── */
+.mobile-header { display: none; }
+
+/* ── RWD ── */
+@media (max-width: 768px) {
+  /* Mobile top bar */
+  .mobile-header {
+    display: flex; align-items: center; gap: 0.75rem;
+    position: sticky; top: 0; z-index: 200;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 0.75rem 1rem; height: 52px;
+  }
+  .mobile-logo { font-size: 1rem; font-weight: 700; color: var(--accent); flex: 1; }
+  .hamburger {
+    display: flex; flex-direction: column; justify-content: center; gap: 5px;
+    background: transparent; padding: 4px; border-radius: 6px; width: 32px; height: 32px;
+  }
+  .hamburger span { display: block; height: 2px; background: var(--text); border-radius: 2px; transition: 0.2s; }
+  .hamburger:hover span { background: var(--accent); }
+  .theme-toggle-mobile {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.3rem 0.5rem; font-size: 1rem;
+  }
+
+  /* Sidebar becomes slide-in overlay */
+  .sidebar-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 299; backdrop-filter: blur(2px);
+  }
+  .sidebar {
+    position: fixed; top: 0; left: 0; height: 100vh;
+    transform: translateX(-100%); transition: transform 0.25s ease;
+    z-index: 300; width: 260px; box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+  }
+  .sidebar--open { transform: translateX(0); }
+  .sidebar-close {
+    display: flex; margin-left: auto;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.15rem 0.5rem; font-size: 0.85rem; color: var(--muted);
+  }
+  .sidebar-close:hover { color: var(--danger); border-color: var(--danger); }
+
+  /* Main takes full width */
+  .main { padding: 1rem; max-width: 100%; }
+  .page-title { font-size: 1.3rem; }
+
+  /* Grids → single column on small screens */
+  .stats-dashboard { grid-template-columns: repeat(2, 1fr) !important; }
+  .recent-docs, .doc-grid, .categories-grid { grid-template-columns: 1fr !important; }
+
+  /* Markdown reader full width */
+  .md-body { padding: 1rem; }
+  .notes-md-body, .doc-reader .md-body { max-height: 70vh; }
+
+  /* Wiki/lint adjustments */
+  .lint-score-row { flex-wrap: wrap; }
+  .issue-actions { flex-direction: column; align-items: flex-start; }
+
+  /* Hide theme toggle in sidebar (use mobile header instead) */
+  .theme-toggle { display: none; }
+}
 
 /* loading */
 .loading-state { text-align: center; padding: 3rem; color: var(--muted); }
