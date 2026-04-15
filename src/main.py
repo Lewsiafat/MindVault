@@ -920,6 +920,72 @@ Wiki 概覽（共 {len(summaries)} 個摘要頁、{len(pages)} 個概念頁）�
     return result
 
 
+# ─── wiki graph ─────────────────────────────────────────────
+
+@app.get("/api/wiki/graph")
+def wiki_graph():
+    """Build a node-edge graph from wiki summaries and concept pages."""
+    summaries_dir = WIKI_DIR / "summaries"
+    pages_dir = WIKI_DIR / "pages"
+
+    summaries = list(summaries_dir.glob("*.md")) if summaries_dir.exists() else []
+    pages = list(pages_dir.glob("*.md")) if pages_dir.exists() else []
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_nodes: set[str] = set()
+
+    def add_node(slug: str, title: str, node_type: str):
+        if slug not in seen_nodes:
+            nodes.append({"id": slug, "label": title, "type": node_type})
+            seen_nodes.add(slug)
+
+    # Add summary nodes
+    for p in summaries:
+        content = p.read_text(encoding="utf-8")
+        title_m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+        title = title_m.group(1) if title_m else p.stem
+        add_node(p.stem, title, "summary")
+
+    # Add concept nodes + build edges from [[link]] references
+    for p in pages:
+        content = p.read_text(encoding="utf-8")
+        title_m = re.search(r"^#+ (.+)", content, re.MULTILINE)
+        title = title_m.group(1) if title_m else p.stem
+        add_node(p.stem, title, "concept")
+
+        # Find source links in "## 來源文件" section
+        source_section = re.search(r"## 來源文件(.*?)(?=^##|\Z)", content, re.MULTILINE | re.DOTALL)
+        if source_section:
+            for link in re.findall(r"\[\[([^\]]+)\]\]", source_section.group(1)):
+                target = link.strip()
+                if target:
+                    # Ensure target node exists (as orphan summary if not present)
+                    if target not in seen_nodes:
+                        add_node(target, target, "summary")
+                    edges.append({"source": p.stem, "target": target, "label": "引用"})
+
+        # Find cross-links in concept body
+        body_links = re.findall(r"\[\[([^\]]+)\]\]", content)
+        for link in body_links:
+            target = link.strip()
+            if target and target != p.stem:
+                if target not in seen_nodes:
+                    add_node(target, target, "concept")
+                edges.append({"source": p.stem, "target": target, "label": "相關"})
+
+    # Deduplicate edges
+    seen_edges: set[tuple] = set()
+    unique_edges = []
+    for e in edges:
+        key = (e["source"], e["target"])
+        if key not in seen_edges:
+            seen_edges.add(key)
+            unique_edges.append(e)
+
+    return {"nodes": nodes, "edges": unique_edges}
+
+
 # ─── static frontend ───────────────────────────────────────
 
 STATIC_DIR = Path(__file__).parent / "static"

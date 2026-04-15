@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { marked } from 'marked'
+
+declare const d3: any
 
 const BASE = import.meta.env.PROD ? '/mind-vault' : ''
 
-type View = 'overview' | 'library' | 'categories' | 'search' | 'raw' | 'wiki'
+type View = 'overview' | 'library' | 'categories' | 'search' | 'raw' | 'wiki' | 'graph'
 
 const view = ref<View>('overview')
 const summaryLoading = ref(false)
@@ -44,6 +46,31 @@ const wikiStatusLoaded = ref(false)
 const lintResult = ref<{ issues: any[], suggestions: any[], health_score: number, summary: string, stats: any } | null>(null)
 const lintLoading = ref(false)
 const fixingIssueIdx = ref<number | null>(null)
+
+// Graph
+const graphData = ref<{ nodes: any[], edges: any[] } | null>(null)
+const graphLoading = ref(false)
+const graphLoaded = ref(false)
+const graphContainer = ref<HTMLElement | null>(null)
+
+// Favorites (localStorage)
+const favorites = ref<Set<string>>(new Set(JSON.parse(localStorage.getItem('mv-favorites') || '[]')))
+function isFavorite(slug: string) { return favorites.value.has(slug) }
+function toggleFavorite(slug: string, e?: Event) {
+  e?.stopPropagation()
+  const next = new Set(favorites.value)
+  if (next.has(slug)) next.delete(slug)
+  else next.add(slug)
+  favorites.value = next
+  localStorage.setItem('mv-favorites', JSON.stringify([...next]))
+}
+const favoritePages = computed(() => {
+  if (!wikiPages.value.pages) return []
+  return wikiPages.value.pages.filter((p: any) => favorites.value.has(p.slug))
+})
+const favoriteDocs = computed(() => {
+  return library.value.docs.filter((d: any) => favorites.value.has(d.folder + '/' + d.name))
+})
 
 // Mobile sidebar
 const sidebarOpen = ref(false)
@@ -139,6 +166,32 @@ async function fetchWikiPages() {
 async function openWikiPage(slug: string, type: string) {
   const r = await fetch(`${BASE}/api/wiki/page?slug=${encodeURIComponent(slug)}&type=${type}`)
   activeWikiPage.value = await r.json()
+  // Switch to wiki view if not already there
+  if (view.value !== 'wiki') {
+    view.value = 'wiki'
+    if (!wikiStatusLoaded.value) { fetchWikiStatus(); fetchWikiPages() }
+  }
+  await nextTick()
+  interceptWikiLinks()
+}
+
+function interceptWikiLinks() {
+  const container = document.querySelector('.wiki-page-body')
+  if (!container) return
+  container.querySelectorAll('a').forEach((a: Element) => {
+    const anchor = a as HTMLAnchorElement
+    const href = anchor.getAttribute('href') || ''
+    // Internal wiki links: [[slug]] rendered as href, or relative links
+    const slugMatch = href.match(/^(?:\.\.?\/)?([^/]+?)(?:\.md)?$/)
+    if (slugMatch && !href.startsWith('http')) {
+      anchor.addEventListener('click', (e) => {
+        e.preventDefault()
+        const target = slugMatch[1]
+        // Try concept first, fallback to summary
+        openWikiPage(target, 'concept').catch(() => openWikiPage(target, 'summary'))
+      })
+    }
+  })
 }
 
 async function ingestDoc(folder: string, name: string) {
@@ -207,6 +260,108 @@ async function fixIssue(issue: any, idx: number) {
   } finally {
     fixingIssueIdx.value = null
   }
+}
+
+async function fetchGraph() {
+  graphLoading.value = true
+  try {
+    const r = await fetch(`${BASE}/api/wiki/graph`)
+    graphData.value = await r.json()
+    graphLoaded.value = true
+    await nextTick()
+    drawGraph()
+  } finally {
+    graphLoading.value = false
+  }
+}
+
+function drawGraph() {
+  const data = graphData.value
+  const container = graphContainer.value
+  if (!data || !container || typeof d3 === 'undefined') return
+
+  container.innerHTML = ''
+  const W = container.clientWidth || 800
+  const H = Math.max(500, container.clientHeight || 500)
+
+  const svg = d3.select(container).append('svg')
+    .attr('width', W).attr('height', H)
+    .style('background', 'transparent')
+    .call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', (e: any) => g.attr('transform', e.transform)))
+
+  const g = svg.append('g')
+
+  // Arrow markers
+  svg.append('defs').selectAll('marker')
+    .data(['arrow'])
+    .join('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -5 10 10')
+    .attr('refX', 20).attr('refY', 0)
+    .attr('markerWidth', 6).attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-5L10,0L0,5')
+    .attr('fill', '#4b5563')
+
+  const simulation = d3.forceSimulation(data.nodes)
+    .force('link', d3.forceLink(data.edges).id((d: any) => d.id).distance(120).strength(0.5))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide(40))
+
+  const link = g.append('g').selectAll('line')
+    .data(data.edges).join('line')
+    .attr('stroke', '#374151').attr('stroke-width', 1.5)
+    .attr('marker-end', 'url(#arrow)').attr('opacity', 0.6)
+
+  const node = g.append('g').selectAll('g')
+    .data(data.nodes).join('g')
+    .attr('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e: any, d: any) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y })
+      .on('drag', (e: any, d: any) => { d.fx = e.x; d.fy = e.y })
+      .on('end', (e: any, d: any) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null }))
+    .on('click', (_: any, d: any) => {
+      openWikiPage(d.id, d.type)
+    })
+
+  node.append('circle')
+    .attr('r', (d: any) => d.type === 'concept' ? 14 : 10)
+    .attr('fill', (d: any) => d.type === 'concept' ? '#3b82f6' : '#6b7280')
+    .attr('stroke', (d: any) => d.type === 'concept' ? '#93c5fd' : '#9ca3af')
+    .attr('stroke-width', 2)
+
+  node.append('text')
+    .text((d: any) => d.label.length > 12 ? d.label.slice(0, 12) + '…' : d.label)
+    .attr('x', 0).attr('y', (d: any) => (d.type === 'concept' ? 14 : 10) + 14)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '11px')
+    .attr('fill', '#9ca3af')
+    .attr('pointer-events', 'none')
+
+  // Tooltip
+  const tooltip = d3.select(container).append('div')
+    .style('position', 'absolute').style('background', 'var(--surface)')
+    .style('border', '1px solid var(--border)').style('border-radius', '8px')
+    .style('padding', '6px 10px').style('font-size', '12px').style('color', 'var(--text)')
+    .style('pointer-events', 'none').style('opacity', 0).style('max-width', '200px')
+    .style('z-index', '10')
+
+  node.on('mouseover', (e: any, d: any) => {
+    tooltip.html(`<strong>${d.label}</strong><br><span style="color:var(--muted)">${d.type === 'concept' ? '💡 概念頁' : '📝 摘要頁'}</span>`)
+      .style('opacity', 1)
+      .style('left', (e.offsetX + 12) + 'px')
+      .style('top', (e.offsetY - 10) + 'px')
+  }).on('mousemove', (e: any) => {
+    tooltip.style('left', (e.offsetX + 12) + 'px').style('top', (e.offsetY - 10) + 'px')
+  }).on('mouseout', () => tooltip.style('opacity', 0))
+
+  simulation.on('tick', () => {
+    link.attr('x1', (d: any) => d.source.x).attr('y1', (d: any) => d.source.y)
+        .attr('x2', (d: any) => d.target.x).attr('y2', (d: any) => d.target.y)
+    node.attr('transform', (d: any) => `translate(${d.x},${d.y})`)
+  })
 }
 
 async function openDoc(folder: string, name: string) {
@@ -282,6 +437,7 @@ function setView(v: View) {
     fetchWikiStatus()
     fetchWikiPages()
   }
+  if (v === 'graph' && !graphLoaded.value) fetchGraph()
 }
 
 const folderEmoji: Record<string, string> = {
@@ -340,6 +496,9 @@ onMounted(() => {
         </button>
         <button :class="['nav-item', view === 'wiki' && 'active']" @click="setView('wiki')">
           <span>📖</span> Wiki
+        </button>
+        <button :class="['nav-item', view === 'graph' && 'active']" @click="setView('graph')">
+          <span>🗺</span> 關聯圖
         </button>
       </nav>
       <button class="theme-toggle" @click="toggleTheme" :title="isDark ? '切換淺色主題' : '切換深色主題'">
@@ -405,6 +564,30 @@ onMounted(() => {
           </span>
         </div>
 
+        <!-- Favorites -->
+        <template v-if="favoritePages.length || favoriteDocs.length">
+          <h2 class="section-subtitle">⭐ 我的收藏</h2>
+          <div class="recent-docs" style="margin-bottom:1.5rem">
+            <div class="recent-doc-card" v-for="p in favoritePages" :key="'wiki-'+p.slug"
+              @click="openWikiPage(p.slug, p.type)">
+              <div class="recent-doc-top">
+                <span class="recent-doc-label">{{ p.type === 'concept' ? '💡 概念' : '📝 摘要' }}</span>
+                <button class="fav-btn fav-on" @click="toggleFavorite(p.slug, $event)" title="取消收藏">⭐</button>
+              </div>
+              <div class="recent-doc-title">{{ p.title }}</div>
+            </div>
+            <div class="recent-doc-card" v-for="d in favoriteDocs" :key="'doc-'+d.folder+d.name"
+              @click="openDoc(d.folder, d.name)">
+              <div class="recent-doc-top">
+                <span class="recent-doc-label">{{ d.label }}</span>
+                <button class="fav-btn fav-on" @click="toggleFavorite(d.folder+'/'+d.name, $event)" title="取消收藏">⭐</button>
+              </div>
+              <div class="recent-doc-title">{{ d.title || d.name }}</div>
+              <p class="recent-doc-preview">{{ d.preview }}</p>
+            </div>
+          </div>
+        </template>
+
         <!-- Recent docs -->
         <h2 class="section-subtitle">最近更新</h2>
         <div v-if="libLoading && !library.docs.length" class="loading-dots" style="justify-content:flex-start;gap:0.4rem;margin-bottom:1rem;">
@@ -454,7 +637,13 @@ onMounted(() => {
                 <div class="doc-grid">
                   <div class="doc-card" v-for="doc in library.docs.filter(d => d.folder === folder)" :key="doc.name"
                     @click="openDoc(doc.folder, doc.name)">
-                    <div class="doc-name">{{ doc.title || doc.name }}</div>
+                    <div class="doc-card-top">
+                      <div class="doc-name">{{ doc.title || doc.name }}</div>
+                      <button :class="['fav-btn', isFavorite(doc.folder+'/'+doc.name) ? 'fav-on' : 'fav-off']"
+                        @click="toggleFavorite(doc.folder+'/'+doc.name, $event)" :title="isFavorite(doc.folder+'/'+doc.name) ? '取消收藏' : '加入收藏'">
+                        {{ isFavorite(doc.folder+'/'+doc.name) ? '⭐' : '☆' }}
+                      </button>
+                    </div>
                     <div class="doc-filename">{{ doc.name }}</div>
                     <p class="doc-preview">{{ doc.preview }}</p>
                     <div class="doc-size">{{ Math.round(doc.size / 1024 * 10) / 10 }} KB</div>
@@ -531,8 +720,13 @@ onMounted(() => {
             <button class="back-btn" @click="activeWikiPage = null">← 返回 Wiki</button>
             <span class="doc-reader-title">{{ activeWikiPage.slug }}</span>
             <span class="result-type-badge">{{ activeWikiPage.type === 'summary' ? '📝 摘要' : '💡 概念' }}</span>
+            <button :class="['fav-btn', isFavorite(activeWikiPage.slug) ? 'fav-on' : 'fav-off']"
+              @click="toggleFavorite(activeWikiPage.slug)"
+              :title="isFavorite(activeWikiPage.slug) ? '取消收藏' : '加入收藏'">
+              {{ isFavorite(activeWikiPage.slug) ? '⭐' : '☆' }}
+            </button>
           </div>
-          <div class="md-body" v-html="renderMd(activeWikiPage.content)"></div>
+          <div class="md-body wiki-page-body" v-html="renderMd(activeWikiPage.content)"></div>
         </div>
 
         <template v-else>
@@ -685,6 +879,27 @@ onMounted(() => {
               尚無 Wiki 頁面。點擊「全部匯入」開始從文件生成摘要。
             </div>
           </div>
+        </template>
+      </section>
+
+      <!-- ── GRAPH ── -->
+      <section v-if="view === 'graph'" class="section">
+        <h1 class="page-title">🗺 概念關聯圖</h1>
+        <div v-if="graphLoading" class="loading-state">
+          <div class="loading-dots"><span></span><span></span><span></span></div>
+          <p>建立關聯圖中...</p>
+        </div>
+        <div v-else-if="graphData && !graphData.nodes.length" class="empty-state">
+          尚無 Wiki 資料。請先到 Wiki 頁面匯入文件並合成概念。
+        </div>
+        <template v-else-if="graphData">
+          <div class="graph-legend">
+            <span class="graph-legend-item"><span class="graph-dot concept"></span> 概念頁（{{ graphData.nodes.filter((n:any) => n.type==='concept').length }}）</span>
+            <span class="graph-legend-item"><span class="graph-dot summary"></span> 摘要頁（{{ graphData.nodes.filter((n:any) => n.type==='summary').length }}）</span>
+            <span class="graph-legend-tip">點擊節點開啟頁面 · 拖拉移動 · 滾輪縮放</span>
+            <button class="refresh-btn" @click="() => { graphLoaded=false; fetchGraph() }">重新整理</button>
+          </div>
+          <div class="graph-container" ref="graphContainer"></div>
         </template>
       </section>
 
@@ -842,6 +1057,25 @@ onMounted(() => {
 .issue-fix-btn:hover:not(:disabled) { opacity: 0.85; }
 .lint-suggestion { font-size: 0.83rem; color: var(--muted); padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
 .lint-suggestion:last-child { border-bottom: none; }
+
+/* doc-card-top */
+.doc-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.15rem; }
+.doc-card-top .doc-name { flex: 1; }
+
+/* favorites */
+.fav-btn { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 0; line-height: 1; flex-shrink: 0; transition: transform 0.15s; }
+.fav-btn:hover { transform: scale(1.2); }
+.fav-off { opacity: 0.35; color: var(--muted); }
+.fav-on { opacity: 1; }
+
+/* graph */
+.graph-legend { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.83rem; color: var(--muted); }
+.graph-legend-item { display: flex; align-items: center; gap: 0.4rem; }
+.graph-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.graph-dot.concept { background: #3b82f6; border: 2px solid #93c5fd; }
+.graph-dot.summary { background: #6b7280; border: 2px solid #9ca3af; }
+.graph-legend-tip { color: var(--border); font-size: 0.78rem; }
+.graph-container { position: relative; width: 100%; height: 580px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 
 /* theme toggle */
 .theme-toggle { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.6rem; font-size: 1rem; margin-bottom: 0.75rem; width: 100%; text-align: left; color: var(--muted); }
