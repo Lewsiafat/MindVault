@@ -112,11 +112,12 @@ async function fetchSummary() {
   }
 }
 
-async function fetchCategories() {
-  if (catLoaded.value) return
+async function fetchCategories(force = false) {
+  if (catLoaded.value && !force) return
   catLoading.value = true
   try {
-    const r = await fetch(`${BASE}/api/categorize`)
+    const url = force ? `${BASE}/api/categorize?force=true` : `${BASE}/api/categorize`
+    const r = await fetch(url)
     categories.value = await r.json()
     catLoaded.value = true
   } finally {
@@ -657,7 +658,13 @@ onMounted(() => {
 
       <!-- ── CATEGORIES ── -->
       <section v-if="view === 'categories'" class="section">
-        <h1 class="page-title">AI 智能分類</h1>
+        <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap">
+          <h1 class="page-title" style="margin-bottom:0">AI 智能分類</h1>
+          <button class="refresh-btn" @click="fetchCategories(true)" :disabled="catLoading">
+            {{ catLoading ? '重新分析中...' : '🔄 重新產生' }}
+          </button>
+          <span style="font-size:0.78rem;color:var(--muted)">分類結果自動快取，新增文件後會自動更新</span>
+        </div>
         <div v-if="catLoading" class="loading-state">
           <div class="loading-dots"><span></span><span></span><span></span></div>
           <p>AI 正在分析所有筆記和文件...</p>

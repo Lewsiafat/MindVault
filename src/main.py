@@ -141,6 +141,8 @@ def gemini(prompt: str) -> str:
 _ai_cache: dict = {}
 _cache_ttl = 3600
 
+CACHE_DIR = DATA_DIR / "cache"
+
 
 def get_cached(key: str):
     entry = _ai_cache.get(key)
@@ -151,6 +153,48 @@ def get_cached(key: str):
 
 def set_cached(key: str, data):
     _ai_cache[key] = {"data": data, "ts": time.time()}
+
+
+# ── Persistent file cache helpers ───────────────────────────
+
+def _doc_fingerprint() -> str:
+    """Hash of all doc names+mtimes — changes when files are added/modified."""
+    import hashlib
+    parts = []
+    for folder in ["root"] + list(SUBFOLDERS.keys()):
+        if folder == "root":
+            if NOTES_FILE.exists():
+                parts.append(f"notes:{NOTES_FILE.stat().st_mtime:.0f}")
+        else:
+            folder_path = DATA_DIR / folder
+            if folder_path.exists():
+                for f in sorted(folder_path.glob("*.md")):
+                    parts.append(f"{f.name}:{f.stat().st_mtime:.0f}")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+
+
+def get_file_cached(key: str) -> dict | None:
+    """Read persistent JSON cache. Returns None if missing or fingerprint mismatch."""
+    path = CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("_fingerprint") == _doc_fingerprint():
+            return data.get("_payload")
+    except Exception:
+        pass
+    return None
+
+
+def set_file_cached(key: str, payload: dict):
+    """Write persistent JSON cache with current doc fingerprint."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CACHE_DIR / f"{key}.json"
+    path.write_text(json.dumps(
+        {"_fingerprint": _doc_fingerprint(), "_payload": payload},
+        ensure_ascii=False, indent=2
+    ), encoding="utf-8")
 
 
 # ─── routes ────────────────────────────────────────────────
@@ -263,10 +307,17 @@ def get_summary():
 
 
 @app.get("/api/categorize")
-def get_categories():
-    cached = get_cached("categorize")
-    if cached:
-        return cached
+def get_categories(force: bool = False):
+    if not force:
+        # 1. Try in-memory cache
+        cached = get_cached("categorize")
+        if cached:
+            return cached
+        # 2. Try persistent file cache (survives restarts)
+        file_cached = get_file_cached("categorize")
+        if file_cached:
+            set_cached("categorize", file_cached)  # warm memory cache too
+            return file_cached
 
     # notes.md bullet items
     text = load_notes()
@@ -343,6 +394,7 @@ def get_categories():
                     item["name"] = match["name"]
 
     set_cached("categorize", result)
+    set_file_cached("categorize", result)  # persist to file
     return result
 
 
