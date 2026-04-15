@@ -8,12 +8,13 @@ AI-powered personal knowledge base — browse notes, documents, and memories thr
 
 ## What It Does
 
-- **Overview** — Stats dashboard (doc count, word count, notes items) + recently updated docs, all clickable
-- **Library** — All documents grouped by folder, with inline markdown reader and AI summary per doc
-- **Categories** — Gemini auto-categorizes all notes and documents into smart groups
+- **Overview** — Stats dashboard (doc count, word count, notes items) + recently updated docs + ⭐ favorites, all clickable
+- **Library** — All documents grouped by folder, with inline markdown reader, AI summary, and ⭐ favorite button per doc
+- **Categories** — Gemini auto-categorizes all notes and documents into smart groups (persistent file cache — survives restarts)
 - **Search** — Full-text search across notes and all documents
 - **Raw Notes** — Rendered markdown view of `notes.md`
-- **Wiki** — Per-document AI summarization, concept ingestion, and cross-document knowledge synthesis
+- **Wiki** — Per-document AI summarization, concept ingestion, and cross-document knowledge synthesis; ⭐ favorite button on each page; internal links navigate within the SPA
+- **Concept Graph** — D3.js force-directed graph visualizing relationships between wiki concepts and documents
 - **Lint** — AI health-check of notes quality with severity scoring and one-click fix
 - **RWD** — Fully responsive; hamburger slide-in sidebar on mobile (≤768px)
 
@@ -49,7 +50,8 @@ MindVault/
 │   ├── notes.md         # Primary notes file
 │   ├── articles/        # Saved articles
 │   ├── saves/           # Saved references
-│   └── conversations/   # Conversation exports
+│   ├── conversations/   # Conversation exports
+│   └── cache/           # Persistent AI cache (auto-generated, gitignored)
 ├── specs/               # Development task walkthroughs
 ├── pyproject.toml       # Python deps (uv-managed)
 └── .github/workflows/
@@ -72,6 +74,7 @@ MindVault/
 | GET | `/api/search?q=` | Full-text search across notes and docs |
 | GET | `/api/wiki/status` | Wiki build status and pending docs |
 | GET | `/api/wiki/pages` | All wiki pages |
+| GET | `/api/wiki/graph` | Concept graph — `{nodes, edges}` from wiki `[[link]]` references |
 | POST | `/api/wiki/ingest` | Ingest a document into wiki |
 | POST | `/api/wiki/synthesize` | Cross-document knowledge synthesis |
 | POST | `/api/lint` | Run AI lint health-check on notes |

@@ -19,7 +19,11 @@ The entire frontend is one file: `frontend/src/App.vue`. Views are toggled with 
 All content lives in `data/` as markdown files. No database. The backend reads files on every request (no persistent state except in-memory AI cache).
 
 ### AI caching
-Gemini calls are expensive. Results are cached in-memory with a 1-hour TTL (`_cache_ttl = 3600`). Cache is stored in `_ai_cache` dict. Cache resets on service restart.
+Gemini calls are expensive. Results are cached at two levels:
+1. **In-memory** (`_ai_cache` dict) — 1-hour TTL (`_cache_ttl = 3600`), resets on restart
+2. **File cache** (`data/cache/*.json`) — survives restarts; validated by md5 fingerprint of all doc names+mtimes; auto-invalidates when files change
+
+The `get_file_cached(key)` / `set_file_cached(key, payload)` helpers manage the file cache. Currently only `categorize` uses both levels; other AI calls use in-memory only.
 
 ### Document folders
 ```
