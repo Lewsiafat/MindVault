@@ -268,11 +268,11 @@ async function fetchGraph() {
     const r = await fetch(`${BASE}/api/wiki/graph`)
     graphData.value = await r.json()
     graphLoaded.value = true
-    await nextTick()
-    drawGraph()
   } finally {
-    graphLoading.value = false
+    graphLoading.value = false  // clear loading FIRST so graph-container renders
   }
+  await nextTick()  // wait for DOM to render the container
+  drawGraph()
 }
 
 function drawGraph() {
