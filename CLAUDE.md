@@ -4,9 +4,8 @@
 
 MindVault is an AI-powered personal knowledge base web service. It reads markdown files from `data/` and exposes them via a FastAPI backend + Vue 3 frontend.
 
-**Live URL:** https://lewsi.ddns.net/mind-vault/
-**Port:** 10016
-**VPS path:** `/srv/projects/mind-vault/`
+**Default URL:** http://localhost:8000/mind-vault/
+**Default Port:** 8000 (configurable)
 
 ---
 
@@ -63,15 +62,19 @@ Then commit and push — the deploy workflow syncs `data/` to VPS.
 
 ## Deployment
 
-Push to `main` branch triggers GitHub Actions:
-1. Build Vue frontend (`npm run build` → output to `frontend/dist/`)
-2. The build step in `vite.config.ts` copies dist to `src/static/` (check config)
-3. Rsync `src/static/`, `src/main.py`, `pyproject.toml`, `data/` to VPS
-4. SSH: `uv sync` to install/update Python deps
-5. `systemctl restart mind-vault`
+**Docker (recommended):**
+```bash
+docker compose up --build
+```
 
-**Check deployment:** `gh run list --limit 5`
-**Check service:** `journalctl -u mind-vault -f`
+**Manual:**
+```bash
+uv sync
+cd frontend && npm run build && cd ..
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
+
+For VPS deployment: see README.md for nginx + systemd setup.
 
 ---
 
@@ -102,14 +105,6 @@ Gemini may return string items instead of dicts in category arrays. Always norma
 
 ### `is_relative_to()` security check
 In `get_doc()`, always verify `path.is_relative_to(DATA_DIR)` to prevent path traversal attacks.
-
----
-
-## File Sync Schedule
-
-A scheduled nano task runs daily at 2am to sync new workspace files to MindVault:
-- `notes.md` is always synced
-- New articles/saves/conversations added by nano are manually synced at time of creation
 
 ---
 
