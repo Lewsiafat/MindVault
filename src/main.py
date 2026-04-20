@@ -2,19 +2,19 @@ import os
 import re
 import json
 import time
+import shutil
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from google import genai as genai_sdk
 
-BASE_PATH = os.environ.get("BASE_PATH", "mind-vault").strip("/")
-root_path = f"/{BASE_PATH}" if BASE_PATH else ""
+from src.config import settings
+from src.ai import get_provider, AIProvider
 
-app = FastAPI(title="MindVault", root_path=root_path)
+app = FastAPI(title="MindVault", root_path=settings.root_path)
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR: Path = settings.data_dir
 NOTES_FILE = DATA_DIR / "notes.md"
 WIKI_DIR = DATA_DIR / "wiki"
 
@@ -25,8 +25,37 @@ SUBFOLDERS = {
     "conversations": "💬 對話記錄",
 }
 
-_gemini_key = os.environ.get("GEMINI_API_KEY", "")
-_client = genai_sdk.Client(api_key=_gemini_key) if _gemini_key else None
+
+def _initialize_data_dir() -> None:
+    """If DATA_DIR is missing: auto-seed from data.example/ when unset, else fail-fast."""
+    if DATA_DIR.exists():
+        return
+    if "DATA_DIR" in os.environ:
+        raise RuntimeError(
+            f"DATA_DIR is set to {DATA_DIR} but that path does not exist. "
+            "Create it or update your .env."
+        )
+    example_dir = Path(__file__).parent.parent / "data.example"
+    if example_dir.exists():
+        shutil.copytree(example_dir, DATA_DIR)
+        print(f"[MindVault] Initialized DATA_DIR from data.example/ → {DATA_DIR}")
+    else:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"[MindVault] Created empty DATA_DIR → {DATA_DIR}")
+
+
+_initialize_data_dir()
+
+
+_provider: AIProvider | None = None
+
+
+def _ai() -> AIProvider:
+    """Lazy-init the AI provider on first use so import-time doesn't require an API key."""
+    global _provider
+    if _provider is None:
+        _provider = get_provider()
+    return _provider
 
 # ─── helpers ───────────────────────────────────────────────
 
@@ -52,10 +81,14 @@ def load_all_docs() -> list[dict]:
 
     # sub-folders
     for folder, label in SUBFOLDERS.items():
+        if folder.startswith("."):
+            continue  # skip hidden folders (e.g. .obsidian/, .git/) defensively
         folder_path = DATA_DIR / folder
         if not folder_path.exists():
             continue
         for f in sorted(folder_path.glob("*.md")):
+            if f.name.startswith("."):
+                continue
             try:
                 content = f.read_text(encoding="utf-8")
                 docs.append({
@@ -126,10 +159,12 @@ def doc_preview(content: str, max_chars: int = 300) -> str:
 
 
 def gemini(prompt: str) -> str:
-    if not _client:
-        raise ValueError("GEMINI_API_KEY not configured")
-    resp = _client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    text_out = resp.text.strip()
+    """Generate text via the configured AI provider (name kept for historical reasons).
+
+    Handles output post-processing (markdown code-fence stripping) so callers
+    can json.loads() the result directly.
+    """
+    text_out = _ai().generate(prompt).strip()
     if text_out.startswith("```"):
         text_out = re.sub(r"^```[a-z]*\n?", "", text_out)
         text_out = re.sub(r"\n?```$", "", text_out)
@@ -141,7 +176,7 @@ def gemini(prompt: str) -> str:
 _ai_cache: dict = {}
 _cache_ttl = 3600
 
-CACHE_DIR = DATA_DIR / "cache"
+CACHE_DIR: Path = settings.cache_dir or (DATA_DIR / "cache")
 
 
 def get_cached(key: str):
