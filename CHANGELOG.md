@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.0] - 2026-04-20 — Open-source release
+
+### Added
+- **AI provider abstraction** (`src/ai/`): `AIProvider` ABC + routing factory. Supports `gemini` / `claude` / `openai` / `openrouter` / `ollama` via one `AI_PROVIDER` env var. Per-provider SDKs shipped as `pyproject.toml` optional extras (`--extra gemini`, `--extra claude`, `--extra openai`, `--extra all`).
+- **Config layer** (`src/config.py`): pydantic-settings based `Settings` centralizes `BASE_PATH`, `PORT`, `DATA_DIR`, `CACHE_DIR`, and all AI knobs. Reads `.env`.
+- **Docker packaging**: multi-stage `Dockerfile` (node:20 frontend build → python:3.13 runtime) + `docker-compose.yml` with `DATA_DIR` volume mount and `.env_file`.
+- **Auto-seed of `DATA_DIR`**: on first boot, if `DATA_DIR` is unset and `./data` is missing, MindVault seeds from `data.example/`. If `DATA_DIR` is set but missing, fails fast with a clear error.
+- **Hidden-folder skipping** in `load_all_docs()` so `DATA_DIR` can point at an Obsidian vault or a git repo without picking up `.obsidian/` or `.git/`.
+- `LICENSE` (MIT), `CONTRIBUTING.md`, `docs/` tree with getting-started, data-management, configuration, ai-providers, deployment, architecture, and api-reference guides.
+- `.env.example`, `.dockerignore`.
+
+### Changed
+- Default Gemini model: `gemini-2.0-flash` → `gemini-3.1-flash`.
+- `README.md` / `README.zh-TW.md`: rewritten as product-oriented OSS docs; removed personal live URL; added Karpathy inspiration link.
+- `CLAUDE.md`: removed author-specific paths and deployment specifics.
+- `pyproject.toml`: `google-genai` demoted from a hard dep to an optional extra; added `pydantic-settings` as a core dep; added optional extras for claude / openai / all.
+
+### Removed
+- **GitHub Actions deploy workflow** (`.github/workflows/deploy.yml`). The OSS repo no longer ships a CI/CD pipeline tied to the author's VPS.
+- **Personal `data/` contents** from git tracking. The repo now ships `data.example/` as a seed; `data/` is gitignored.
+- Tracked `src/static/` build artifacts; gitignored and rebuilt by `npm run build` / Docker.
+
 ## [1.2.0] - 2026-04-15
 
 ### Added
