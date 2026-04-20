@@ -1,13 +1,23 @@
 [project]
 name = "mind-vault"
 version = "0.1.0"
-description = "AI-powered notes and memory web interface"
+description = "AI-powered personal knowledge base — a living LLM wiki built from your markdown notes"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "google-genai>=1.0.0",
     "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=1.0.0"]
+claude = ["anthropic>=0.40.0"]
+openai = ["openai>=1.0.0"]
+all = [
+    "google-genai>=1.0.0",
+    "anthropic>=0.40.0",
+    "openai>=1.0.0",
 ]
 
 [build-system]

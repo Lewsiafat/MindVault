@@ -9,4 +9,13 @@ dist/
 .DS_Store
 *.egg-info/
 .pytest_cache/
-data/cache/
+
+# User data — must not be committed. data.example/ is the shipped seed.
+data/
+
+# Built frontend — produced by `npm run build` → `src/static/`.
+src/static/
+
+# Local dev / tooling
+temp/
+.claude/

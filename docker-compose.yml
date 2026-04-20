@@ -1,0 +1,11 @@
+services:
+  mindvault:
+    build: .
+    container_name: mindvault
+    ports:
+      - "${PORT:-10016}:10016"
+    env_file: .env
+    volumes:
+      # Mount the host's DATA_DIR into the container. Default: ./data
+      - ${DATA_DIR:-./data}:/app/data
+    restart: unless-stopped
