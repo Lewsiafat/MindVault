@@ -1,0 +1,25 @@
+.git
+.github
+.venv
+.env
+.env.*
+!.env.example
+
+# Build artifacts — rebuilt inside container
+frontend/node_modules
+frontend/dist
+src/static
+src/__pycache__
+**/__pycache__
+*.pyc
+
+# Local dev / tooling
+.claude
+.vscode
+.idea
+temp
+specs
+docs
+
+# Author's personal data — never bake into the image
+data
