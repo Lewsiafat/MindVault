@@ -86,6 +86,20 @@ cp .env.example .env        # then fill AI_API_KEY
 uv run uvicorn src.main:app --reload --port 10016
 cd frontend && npm install && npm run dev    # in a second terminal
 ```
+Vite dev server proxies `/api/*` → 10016.
+
+### Frontend build
+```bash
+cd frontend && npm run build   # → src/static/ (gitignored; Docker builds it inside the image)
+```
+`vue-tsc --noEmit` runs first, so type errors block the build.
+
+### Pre-submit smoke checks (no test suite exists)
+```bash
+uv run python -c "from src import main"   # backend imports cleanly
+cd frontend && npm run build              # frontend builds + typechecks
+```
+If you touched `src/ai/`, verify at least one provider end-to-end.
 
 ---
 
@@ -120,6 +134,7 @@ In `get_doc()` and `_do_ingest()`, always verify `path.is_relative_to(DATA_DIR)`
 
 ### `vite.config.ts` `base` and `BASE_PATH`
 The frontend build hardcodes `base: '/mind-vault/'`. If you change `BASE_PATH` in `.env`, you must also change `base` in `vite.config.ts` and rebuild the frontend.
+Build output goes to `src/static/` (gitignored). FastAPI serves it via static mount, so production needs the frontend built before packaging.
 
 ---
 
@@ -127,7 +142,7 @@ The frontend build hardcodes `base: '/mind-vault/'`. If you change `BASE_PATH` i
 
 | Tool | Version |
 |------|---------|
-| Python | 3.13 |
+| Python | ≥3.11 (pyproject `requires-python`) |
 | FastAPI | ≥0.115.0 |
 | uvicorn | ≥0.30.0 (with standard extras) |
 | pydantic-settings | ≥2.0.0 |
