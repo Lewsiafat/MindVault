@@ -136,6 +136,15 @@ In `get_doc()` and `_do_ingest()`, always verify `path.is_relative_to(DATA_DIR)`
 The frontend build hardcodes `base: '/mind-vault/'`. If you change `BASE_PATH` in `.env`, you must also change `base` in `vite.config.ts` and rebuild the frontend.
 Build output goes to `src/static/` (gitignored). FastAPI serves it via static mount, so production needs the frontend built before packaging.
 
+### `docker compose restart` does NOT reload `.env`
+`restart` sends SIGTERM/SIGKILL to the existing container; it keeps the env vars captured at container *creation* time. After editing `.env`, always run `docker compose up -d` — it detects the config change and recreates the container with the new env. Applies equally when switching `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, etc.
+
+### Docker bind-mount owns `./data` as root
+The first `docker compose up -d` creates the host-side `./data` directory as `root:root` (since dockerd runs as root). Editing notes on the host then requires `sudo chown`. Two workarounds: pre-create `./data` yourself before `up -d`, or point `DATA_DIR` at an existing path you own.
+
+### Auto-seed doesn't fire under Docker
+`_initialize_data_dir()` returns early when `DATA_DIR` exists. Under Docker the bind-mount creates an empty `./data` before Python runs, so the seed from `data.example/` never happens — the Library boots empty. Workaround: `docker exec mindvault sh -c 'cp -r /app/data.example/. /app/data/'` after first `up -d`, or pre-populate `./data` on the host.
+
 ---
 
 ## Tech Versions

@@ -68,6 +68,9 @@ curl http://localhost:10016/mind-vault/api/health   # health check
 
 - **Ollama on the host:** use `http://host.docker.internal:11434/v1` (macOS/Windows) or `network_mode: host` (Linux).
 - **Changing `BASE_PATH`:** you must also edit `frontend/vite.config.ts`'s `base` value and rebuild the image (`--build`).
+- **`docker compose restart` does NOT reload `.env`.** After editing `.env` (new API key, model, provider, etc.), run `docker compose up -d` — it detects the config change and recreates the container. `restart` only sends a signal to the existing container and keeps the env vars it was created with.
+- **Host `./data` is root-owned after first boot.** The bind-mount is created by dockerd, which runs as root, so the host-side `./data` ends up owned by `root:root`. If you want to edit notes on the host, either pre-create `./data` before the first `up -d`, or set `DATA_DIR` in `.env` to a path you already own.
+- **Library boots empty on first Docker up.** The bind-mount creates an empty `./data` before the Python code runs, so the auto-seed from `data.example/` is skipped. Seed manually with `docker compose exec mindvault sh -c 'cp -r /app/data.example/. /app/data/'`, or pre-populate `./data` on the host before starting.
 
 ---
 
