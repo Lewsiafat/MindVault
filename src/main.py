@@ -675,7 +675,10 @@ def _do_ingest(folder: str, name: str, force: bool = False) -> dict:
     try:
         body = gemini(prompt)
     except Exception as e:
-        return {"status": "error", "reason": str(e), "slug": slug}
+        reason = str(e)
+        if "429" in reason or "RESOURCE_EXHAUSTED" in reason:
+            reason = "Gemini API 限速中（429），請稍後再試"
+        return {"status": "error", "reason": reason, "slug": slug}
 
     # Extract concepts from response for log
     concepts = ""
@@ -721,7 +724,9 @@ def wiki_ingest_all():
     pending = [d for d in docs if d["folder"] != "root" and d["name"].replace(".md", "") not in ingested_slugs]
 
     results = {"ingested": [], "skipped": [], "errors": []}
-    for d in pending:
+    for i, d in enumerate(pending):
+        if i > 0:
+            time.sleep(1.5)  # avoid Gemini RPM rate limiting
         r = _do_ingest(d["folder"], d["name"])
         if r["status"] == "ok":
             results["ingested"].append(r["slug"])
@@ -840,6 +845,8 @@ def wiki_synthesize(force: bool = False):
 ## 相關延伸
 （提出 2-3 個值得進一步探討的問題或方向）"""
 
+        if created or errors:
+            time.sleep(1.5)  # avoid Gemini RPM rate limiting
         try:
             body = gemini(prompt)
         except Exception as e:
